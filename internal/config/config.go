@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/samba-conductor/conductor-sync/internal/alert"
@@ -38,6 +39,35 @@ type Delete struct {
 	MinSuspendedDays int `toml:"min_suspended_days"`
 }
 
+// Schedule is the [schedule] section.
+type Schedule struct {
+	// Interval between scheduled runs (default 15m). With the systemd
+	// timer it must match OnUnitInactiveSec (it is only used to show the
+	// next run); with InProcess, `conductor-sync serve` runs them itself.
+	Interval google.Duration `toml:"interval"`
+	// InProcess makes `conductor-sync serve` the scheduler (hosts without
+	// systemd timers, e.g. containers). Keep the timer disabled then.
+	InProcess bool `toml:"in_process"`
+}
+
+// API is the [api] section: the local management API of `serve`.
+type API struct {
+	// Socket path (default /run/conductor-sync/api.sock). Ignored under
+	// systemd socket activation.
+	Socket string `toml:"socket"`
+	// AllowedUsers and AllowedUIDs are the only peers admitted
+	// (SO_PEERCRED); default the "conductor" user.
+	AllowedUsers []string `toml:"allowed_users"`
+	AllowedUIDs  []int    `toml:"allowed_uids,omitempty"`
+	// SocketGroup (name or numeric GID) owns the socket (mode 0660) so the
+	// conductor user can connect; the conductor-sync user must be a member.
+	SocketGroup string `toml:"socket_group,omitempty"`
+	// StateKeyCredential names the 32-byte key that encrypts secrets set
+	// through the API (the Google service account key) in the state
+	// database: a systemd credential name or an absolute 0600 path.
+	StateKeyCredential string `toml:"state_key_credential"`
+}
+
 // Config is the whole file.
 type Config struct {
 	// Mode is "dry-run" (default: plans only) or "apply".
@@ -50,22 +80,32 @@ type Config struct {
 	// the systemd unit, where $CREDENTIALS_DIRECTORY is not set).
 	CredentialsDir string `toml:"credentials_dir"`
 
-	Source  adsource.Config `toml:"source"`
-	Mapping mapping.Config  `toml:"mapping"`
-	Policy  Policy          `toml:"policy"`
-	Limits  plan.Limits     `toml:"limits"`
-	Google  google.Config   `toml:"google"`
-	Alert   Alert           `toml:"alert"`
-	Delete  Delete          `toml:"delete"`
+	Source   adsource.Config `toml:"source"`
+	Mapping  mapping.Config  `toml:"mapping"`
+	Policy   Policy          `toml:"policy"`
+	Limits   plan.Limits     `toml:"limits"`
+	Google   google.Config   `toml:"google"`
+	Alert    Alert           `toml:"alert"`
+	Delete   Delete          `toml:"delete"`
+	Schedule Schedule        `toml:"schedule"`
+	API      API             `toml:"api"`
 
 	// Rules is the compiled mapping (set by Load).
 	Rules *mapping.Rules `toml:"-"`
+	// Path is the file the configuration was loaded from.
+	Path string `toml:"-"`
+	// SettingsVersion is the stored settings version overlaid on the
+	// file (0: the file's own settings).
+	SettingsVersion int64 `toml:"-"`
 }
 
 // Load reads, defaults and validates a configuration file.
 func Load(path string) (*Config, error) {
 	c := &Config{Limits: plan.DefaultLimits(), Delete: Delete{MinSuspendedDays: 30}}
 	md, err := toml.DecodeFile(path, c)
+	if err == nil {
+		c.Path = path
+	}
 	if err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
@@ -103,6 +143,24 @@ func (c *Config) finish() error {
 	}
 	if c.MaxFailures == 0 {
 		c.MaxFailures = 25
+	}
+	if c.Schedule.Interval.Duration == 0 {
+		c.Schedule.Interval.Duration = 15 * time.Minute
+	}
+	if c.Schedule.Interval.Duration < time.Minute || c.Schedule.Interval.Duration > 7*24*time.Hour {
+		errs = append(errs, errors.New("schedule.interval: between 1m and 168h"))
+	}
+	if c.API.Socket == "" {
+		c.API.Socket = "/run/conductor-sync/api.sock"
+	}
+	if !filepath.IsAbs(c.API.Socket) {
+		errs = append(errs, errors.New("api.socket must be absolute"))
+	}
+	if len(c.API.AllowedUsers) == 0 && len(c.API.AllowedUIDs) == 0 {
+		c.API.AllowedUsers = []string{"conductor"}
+	}
+	if c.API.StateKeyCredential == "" {
+		c.API.StateKeyCredential = "state-key"
 	}
 	if err := c.Source.Validate(); err != nil {
 		errs = append(errs, err)

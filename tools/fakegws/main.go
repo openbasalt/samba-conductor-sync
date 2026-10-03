@@ -9,6 +9,11 @@
 // google.ca_file), sa-key.json (0600, the service account key whose token
 // endpoint it serves) and admin.txt (the admin subject). Test controls:
 //
+// For a persistent test environment, -keep-key reuses the key of
+// sa-key.json from an earlier run (so a key uploaded to conductor-sync stays
+// valid) and -state keeps the directory in a file (saved every few seconds
+// and on SIGTERM).
+//
 //	GET  /_fake/state         users, groups and members as JSON
 //	GET  /_fake/writes        the write requests received
 //	POST /_fake/fault         queue a fakegoogle.Fault (JSON body)
@@ -16,9 +21,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -31,9 +38,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/samba-conductor/conductor-sync/internal/fakegoogle"
@@ -45,6 +54,9 @@ func main() {
 	domains := flag.String("domains", "example.com", "comma-separated domains")
 	ous := flag.String("org-units", "", "comma-separated org unit paths that exist")
 	pageSize := flag.Int("page-size", 100, "list page size")
+	seedAdmin := flag.Bool("seed-admin", false, "create the admin subject's account (the web UI's connection test reads it)")
+	keepKey := flag.Bool("keep-key", false, "reuse the key of an existing sa-key.json in -dir")
+	stateFile := flag.String("state", "", "keep the directory in this file across restarts")
 	flag.Parse()
 	if *dir == "" {
 		log.Fatal("-dir is required")
@@ -65,6 +77,29 @@ func main() {
 	}
 	base := "https://" + net.JoinHostPort(host, port)
 	fake.SetTokenURL(base + "/token")
+	if *keepKey {
+		if k, err := loadKey(filepath.Join(*dir, "sa-key.json")); err == nil {
+			fake.SetKey(k)
+		} else if !os.IsNotExist(err) {
+			log.Fatalf("-keep-key: %v", err)
+		}
+	}
+	if *stateFile != "" {
+		if b, err := os.ReadFile(*stateFile); err == nil {
+			if err := fake.LoadState(b); err != nil {
+				log.Fatalf("-state: %v", err)
+			}
+		} else if !os.IsNotExist(err) {
+			log.Fatal(err)
+		}
+		go persist(fake, *stateFile)
+	}
+	if _, exists := fake.User(fake.AdminSubject); *seedAdmin && !exists {
+		// The administrator the sync acts as, as on a real tenant (the
+		// connection test reads it).
+		fake.SeedUser(fakegoogle.User{PrimaryEmail: fake.AdminSubject, IsAdmin: true,
+			Name: map[string]any{"givenName": "Sync", "familyName": "Administrator"}})
+	}
 	cert, pemCert, err := selfSigned(host)
 	if err != nil {
 		log.Fatal(err)
@@ -118,6 +153,61 @@ func main() {
 	log.Fatal(srv.ListenAndServeTLS("", ""))
 }
 
+// loadKey reads the RSA key of an earlier sa-key.json.
+func loadKey(p string) (*rsa.PrivateKey, error) {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var k struct {
+		PrivateKey string `json:"private_key"`
+	}
+	if err := json.Unmarshal(b, &k); err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode([]byte(k.PrivateKey))
+	if block == nil {
+		return nil, fmt.Errorf("%s: no PEM key", p)
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	rk, ok := parsed.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("%s: not an RSA key", p)
+	}
+	return rk, nil
+}
+
+// persist saves the directory every 5 seconds when it changed, and on
+// SIGTERM/SIGINT (then exits).
+func persist(fake *fakegoogle.Server, p string) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+	var last []byte
+	save := func() {
+		b, err := fake.MarshalState()
+		if err != nil || bytes.Equal(b, last) {
+			return
+		}
+		tmp := p + ".tmp"
+		if err := os.WriteFile(tmp, b, 0o600); err == nil && os.Rename(tmp, p) == nil {
+			last = b
+		}
+	}
+	t := time.NewTicker(5 * time.Second)
+	for {
+		select {
+		case <-t.C:
+			save()
+		case <-sig:
+			save()
+			os.Exit(0)
+		}
+	}
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
@@ -132,7 +222,7 @@ func selfSigned(host string) (tls.Certificate, []byte, error) {
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		Subject:      pkix.Name{CommonName: "fakegws"},
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(7 * 24 * time.Hour),
+		NotAfter:     time.Now().Add(825 * 24 * time.Hour),
 		IPAddresses:  []net.IP{net.ParseIP(host)},
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},

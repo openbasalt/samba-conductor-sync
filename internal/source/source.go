@@ -20,6 +20,13 @@ type Result struct {
 	Users   []model.SourceUser
 	Groups  []model.SourceGroup
 	Skipped []Skipped
+	// Scope lists the groups referenced by the scope and the org unit
+	// rules, resolved (names, members).
+	Scope []model.ScopeGroup
+	// NotIncluded counts users below the bases that are in no include
+	// group; Excluded counts users removed by an exclude group.
+	NotIncluded int
+	Excluded    int
 }
 
 // Source reads the scope.

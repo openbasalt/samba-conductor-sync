@@ -61,44 +61,62 @@ func (v Violation) String() string {
 	return fmt.Sprintf("%s: %g exceeds %g", v.Limit, v.Value, v.Max)
 }
 
+// Row compares one limit with a plan. Max is -1 for "no limit".
+type Row struct {
+	Limit    string
+	Value    float64
+	Max      float64
+	Exceeded bool
+}
+
+// Rows compares every limit with the plan, in a fixed order.
+// previousSourceUsers is the source size of the last applied run (0 when
+// there is none).
+func (l Limits) Rows(p *Plan, previousSourceUsers int) []Row {
+	c := p.Counts()
+	var out []Row
+	count := func(name string, value, max int) {
+		out = append(out, Row{Limit: name, Value: float64(value), Max: float64(max), Exceeded: max != Unlimited && value > max})
+	}
+	count("max_creates", c[UserCreate], l.MaxCreates)
+	count("max_suspends", c[UserSuspend], l.MaxSuspends)
+	count("max_unsuspends", c[UserUnsuspend], l.MaxUnsuspends)
+	count("max_renames", c[UserRename], l.MaxRenames)
+	count("max_updates", c[UserUpdate]+c[UserAdopt], l.MaxUpdates)
+	count("max_group_changes", c[GroupCreate]+c[GroupUpdate]+c[GroupAdopt], l.MaxGroupChanges)
+	count("max_membership_changes", c[MemberAdd]+c[MemberRemove], l.MaxMembershipChanges)
+
+	touched := map[string]bool{}
+	for _, o := range p.Ops {
+		switch o.Kind {
+		case UserUpdate, UserRename, UserSuspend, UserUnsuspend, UserAdopt:
+			touched[o.TargetID] = true
+		}
+	}
+	pct := 0.0
+	if p.ManagedUsers > 0 {
+		pct = round1(100 * float64(len(touched)) / float64(p.ManagedUsers))
+	}
+	out = append(out, Row{Limit: "max_touched_percent", Value: pct, Max: l.MaxTouchedPercent,
+		Exceeded: l.MaxTouchedPercent != Unlimited && l.MaxTouchedPercent >= 0 && p.ManagedUsers > 0 && pct > l.MaxTouchedPercent})
+	out = append(out, Row{Limit: "min_source_users", Value: float64(p.SourceUsers), Max: float64(l.MinSourceUsers),
+		Exceeded: l.MinSourceUsers != Unlimited && p.SourceUsers < l.MinSourceUsers})
+	drop := 0.0
+	if previousSourceUsers > 0 && p.SourceUsers < previousSourceUsers {
+		drop = round1(100 * float64(previousSourceUsers-p.SourceUsers) / float64(previousSourceUsers))
+	}
+	out = append(out, Row{Limit: "max_source_drop_percent", Value: drop, Max: l.MaxSourceDropPercent,
+		Exceeded: l.MaxSourceDropPercent != Unlimited && l.MaxSourceDropPercent >= 0 && drop > l.MaxSourceDropPercent})
+	return out
+}
+
 // Check returns the limits the plan exceeds. previousSourceUsers is the
 // source size of the last applied run (0 when there is none).
 func (l Limits) Check(p *Plan, previousSourceUsers int) []Violation {
-	c := p.Counts()
 	var out []Violation
-	check := func(name string, value, max int) {
-		if max != Unlimited && value > max {
-			out = append(out, Violation{Limit: name, Value: float64(value), Max: float64(max)})
-		}
-	}
-	check("max_creates", c[UserCreate], l.MaxCreates)
-	check("max_suspends", c[UserSuspend], l.MaxSuspends)
-	check("max_unsuspends", c[UserUnsuspend], l.MaxUnsuspends)
-	check("max_renames", c[UserRename], l.MaxRenames)
-	check("max_updates", c[UserUpdate]+c[UserAdopt], l.MaxUpdates)
-	check("max_group_changes", c[GroupCreate]+c[GroupUpdate]+c[GroupAdopt], l.MaxGroupChanges)
-	check("max_membership_changes", c[MemberAdd]+c[MemberRemove], l.MaxMembershipChanges)
-
-	if l.MaxTouchedPercent != Unlimited && l.MaxTouchedPercent >= 0 && p.ManagedUsers > 0 {
-		touched := map[string]bool{}
-		for _, o := range p.Ops {
-			switch o.Kind {
-			case UserUpdate, UserRename, UserSuspend, UserUnsuspend, UserAdopt:
-				touched[o.TargetID] = true
-			}
-		}
-		pct := 100 * float64(len(touched)) / float64(p.ManagedUsers)
-		if pct > l.MaxTouchedPercent {
-			out = append(out, Violation{Limit: "max_touched_percent", Value: round1(pct), Max: l.MaxTouchedPercent})
-		}
-	}
-	if l.MinSourceUsers != Unlimited && p.SourceUsers < l.MinSourceUsers {
-		out = append(out, Violation{Limit: "min_source_users", Value: float64(p.SourceUsers), Max: float64(l.MinSourceUsers)})
-	}
-	if l.MaxSourceDropPercent != Unlimited && l.MaxSourceDropPercent >= 0 && previousSourceUsers > 0 && p.SourceUsers < previousSourceUsers {
-		drop := 100 * float64(previousSourceUsers-p.SourceUsers) / float64(previousSourceUsers)
-		if drop > l.MaxSourceDropPercent {
-			out = append(out, Violation{Limit: "max_source_drop_percent", Value: round1(drop), Max: l.MaxSourceDropPercent})
+	for _, r := range l.Rows(p, previousSourceUsers) {
+		if r.Exceeded {
+			out = append(out, Violation{Limit: r.Limit, Value: r.Value, Max: r.Max})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Limit < out[j].Limit })

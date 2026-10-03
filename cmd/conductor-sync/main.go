@@ -10,6 +10,9 @@
 //	conductor-sync delete-user KEY [--confirm ADDRESS]
 //	conductor-sync audit    verify | export
 //	conductor-sync check-config
+//	conductor-sync serve                     (the management API for conductor)
+//	conductor-sync config   export | import [FILE] | history
+//	conductor-sync key      set FILE | show
 //	conductor-sync version
 //
 // Every command takes --config (default /etc/conductor-sync/conductor-sync.toml).
@@ -33,16 +36,12 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/internal/alert"
+	"github.com/samba-conductor/conductor-sync/internal/app"
 	"github.com/samba-conductor/conductor-sync/internal/config"
-	"github.com/samba-conductor/conductor-sync/internal/connector"
-	"github.com/samba-conductor/conductor-sync/internal/connector/google"
 	"github.com/samba-conductor/conductor-sync/internal/engine"
 	"github.com/samba-conductor/conductor-sync/internal/model"
 	"github.com/samba-conductor/conductor-sync/internal/plan"
 	"github.com/samba-conductor/conductor-sync/internal/secret"
-	"github.com/samba-conductor/conductor-sync/internal/source"
-	"github.com/samba-conductor/conductor-sync/internal/source/adsource"
 	"github.com/samba-conductor/conductor-sync/internal/store"
 )
 
@@ -77,6 +76,9 @@ commands:
   delete-user    permanently delete one suspended, sync-owned account
   audit          verify | export the hash-chained audit log
   check-config   validate the configuration and the credentials
+  serve          run the local management API used by conductor's web UI
+  config         export | import [FILE] | history of the sync settings
+  key            set FILE | show the Google service account key (stored encrypted)
   version
 `)
 }
@@ -123,7 +125,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fs.StringVar(&kind, "kind", "", "user or group")
 	case "delete-user":
 		fs.StringVar(&confirm, "confirm", "", "the account's exact address (non-interactive confirmation)")
-	case "status", "audit", "check-config":
+	case "status", "audit", "check-config", "serve", "config", "key":
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", cmd)
 		usage(stderr)
@@ -141,30 +143,30 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		positional = append(positional, fs.Arg(0))
 		rest = fs.Args()[1:]
 	}
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return exitError
-	}
-	secret.FallbackDir = cfg.CredentialsDir
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	if cmd == "check-config" {
-		return checkConfig(ctx, cfg, stdout, stderr)
-	}
-	if err := cfg.EnsureStateDir(); err != nil {
-		fmt.Fprintln(stderr, "state directory:", err)
-		return exitError
-	}
-	st, err := store.Open(ctx, cfg.StatePath())
+	rt, err := app.Open(ctx, *cfgPath, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitError
 	}
-	defer func() { _ = st.Close() }()
+	defer func() { _ = rt.Close() }()
+	cfg, err := rt.Effective(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitError
+	}
+	st := rt.Store
 
 	switch cmd {
+	case "check-config":
+		return checkConfig(ctx, rt, cfg, stdout, stderr)
+	case "serve":
+		return serve(ctx, rt, cfg, stderr)
+	case "config":
+		return configCmd(ctx, rt, cfg, positional, stdout, stderr)
+	case "key":
+		return keyCmd(ctx, rt, cfg, positional, stdout, stderr)
 	case "status":
 		return status(ctx, cfg, st, stdout, stderr)
 	case "history":
@@ -183,7 +185,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return auditCmd(ctx, st, positional[0], stdout, stderr)
 	}
 
-	eng, err := buildEngine(cfg, st, scheduled, stderr)
+	eng, err := rt.Engine(ctx, cfg, actor(scheduled), stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitError
@@ -235,77 +237,13 @@ func actor(scheduled bool) string {
 	return name
 }
 
-func buildEngine(cfg *config.Config, st *store.Store, scheduled bool, stderr io.Writer) (*engine.Engine, error) {
-	var senders alert.Multi
-	senders = append(senders, alert.Log{W: stderr})
-	if cfg.Alert.WebhookURL != "" {
-		wh := alert.Webhook{URL: cfg.Alert.WebhookURL}
-		if cfg.Alert.WebhookSecretCredential != "" {
-			b, err := secret.Load(cfg.Alert.WebhookSecretCredential)
-			if err != nil {
-				return nil, err
-			}
-			wh.Secret = []byte(strings.TrimSpace(string(b)))
-		}
-		senders = append(senders, wh)
-	}
-	src := &lazySource{cfg: cfg}
-	var keyCache *google.ServiceAccountKey
-	connect := func(write bool) (connector.Connector, error) {
-		if keyCache == nil {
-			b, err := secret.Load(cfg.Google.KeyCredential)
-			if err != nil {
-				return nil, err
-			}
-			k, err := google.ParseServiceAccountKey(b)
-			if err != nil {
-				return nil, err
-			}
-			keyCache = k
-		}
-		return google.New(cfg.Google, keyCache, write, google.Options{})
-	}
-	return &engine.Engine{
-		Store:         st,
-		Source:        src,
-		Connect:       connect,
-		ConnectorName: cfg.Connector,
-		Policy:        cfg.PlanPolicy(),
-		Limits:        cfg.Limits,
-		Mode:          cfg.Mode,
-		MaxFailures:   cfg.MaxFailures,
-		Alert:         senders,
-		MetricsPath:   cfg.MetricsFile,
-		LockPath:      cfg.LockPath(),
-		Actor:         actor(scheduled),
-		Host:          engine.Hostname(),
-		Out:           stderr,
-	}, nil
-}
-
-// lazySource loads the bind password only when the source is read.
-type lazySource struct {
-	cfg *config.Config
-	r   *adsource.Reader
-}
-
-func (l *lazySource) Read(ctx context.Context) (*source.Result, error) {
-	if l.r == nil {
-		pw, err := secret.LoadString(l.cfg.Source.PasswordCredential)
-		if err != nil {
-			return nil, err
-		}
-		r, err := adsource.NewReader(l.cfg.Source, l.cfg.Rules, pw)
-		if err != nil {
-			return nil, err
-		}
-		l.r = r
-	}
-	return l.r.Read(ctx)
-}
-
-func checkConfig(ctx context.Context, cfg *config.Config, stdout, stderr io.Writer) int {
+func checkConfig(ctx context.Context, rt *app.Runtime, cfg *config.Config, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "configuration: ok (mode %s, connector %s, state %s)\n", cfg.Mode, cfg.Connector, cfg.StateDir)
+	if cfg.SettingsVersion > 0 {
+		fmt.Fprintf(stdout, "sync settings: stored version %d (management API); the file's sync settings are not in force\n", cfg.SettingsVersion)
+	} else {
+		fmt.Fprintln(stdout, "sync settings: from the file")
+	}
 	failed := false
 	if _, err := secret.LoadString(cfg.Source.PasswordCredential); err != nil {
 		fmt.Fprintln(stderr, "AD bind password:", err)
@@ -313,26 +251,29 @@ func checkConfig(ctx context.Context, cfg *config.Config, stdout, stderr io.Writ
 	} else {
 		fmt.Fprintln(stdout, "AD bind password: readable")
 	}
-	b, err := secret.Load(cfg.Google.KeyCredential)
-	if err == nil {
-		_, err = google.ParseServiceAccountKey(b)
-	}
-	if err != nil {
+	if _, err := rt.ServiceAccountKey(ctx, cfg); err != nil {
 		fmt.Fprintln(stderr, "Google service account key:", err)
 		failed = true
-	} else {
-		fmt.Fprintln(stdout, "Google service account key: valid")
+	} else if info, _ := rt.KeyInfo(ctx, cfg); info != nil {
+		fmt.Fprintf(stdout, "Google service account key: valid (%s, key %s, from the %s)\n", info.ClientEmail, info.KeyID, info.Source)
 	}
 	if failed {
 		return exitError
 	}
-	src := &lazySource{cfg: cfg}
+	src := rt.NewSource(cfg)
 	r, err := src.Read(ctx)
 	if err != nil {
 		fmt.Fprintln(stderr, "AD read:", err)
 		return exitError
 	}
-	fmt.Fprintf(stdout, "AD: %d users, %d groups in scope, %d skipped\n", len(r.Users), len(r.Groups), len(r.Skipped))
+	fmt.Fprintf(stdout, "AD: %d users, %d groups in scope, %d skipped", len(r.Users), len(r.Groups), len(r.Skipped))
+	if r.NotIncluded+r.Excluded > 0 {
+		fmt.Fprintf(stdout, " (%d in no include group, %d excluded by group)", r.NotIncluded, r.Excluded)
+	}
+	fmt.Fprintln(stdout)
+	for _, g := range r.Scope {
+		fmt.Fprintf(stdout, "  %s group %s: %s, %d members below the user bases\n", g.Role, g.Ref, g.Name, g.Members)
+	}
 	for i, s := range r.Skipped {
 		if i == 20 {
 			fmt.Fprintf(stdout, "  ... %d more\n", len(r.Skipped)-20)
@@ -348,6 +289,16 @@ func printPlan(w io.Writer, c *engine.Computed, all bool, mode string) {
 	fmt.Fprintf(w, "Plan (run %d) for %s, digest %s\n", c.RunID, p.Connector, p.Digest)
 	fmt.Fprintf(w, "Source: %d users, %d groups in scope (%d skipped). Managed on the target: %d users, %d groups.\n",
 		p.SourceUsers, p.SourceGroups, len(c.Skipped), p.ManagedUsers, p.ManagedGroups)
+	for _, g := range p.Scope {
+		name := g.Name
+		if g.Target != "" {
+			name += fmt.Sprintf(" -> %s (priority %d)", g.Target, g.Priority)
+		}
+		fmt.Fprintf(w, "Scope %s group %s: %s, %d members below the user bases.\n", g.Role, g.Ref, name, g.Members)
+	}
+	if p.NotIncluded+p.Excluded > 0 {
+		fmt.Fprintf(w, "Left out by groups: %d in no include group, %d in an exclude group.\n", p.NotIncluded, p.Excluded)
+	}
 	counts := p.Counts()
 	if len(counts) == 0 {
 		fmt.Fprintln(w, "No changes.")
@@ -381,6 +332,12 @@ func printPlan(w io.Writer, c *engine.Computed, all bool, mode string) {
 				fmt.Fprintf(w, "  ... %d more\n", len(p.Warnings)-50)
 				break
 			}
+			fmt.Fprintf(w, "  [%s] %s: %s\n", x.Code, x.Key, x.Message)
+		}
+	}
+	if len(p.Errors) > 0 {
+		fmt.Fprintf(w, "PLAN ERRORS (%d; these users are left untouched until fixed):\n", len(p.Errors))
+		for _, x := range p.Errors {
 			fmt.Fprintf(w, "  [%s] %s: %s\n", x.Code, x.Key, x.Message)
 		}
 	}

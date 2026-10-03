@@ -68,7 +68,35 @@ type SourceUser struct {
 	// suspended on the target (when the policy says so).
 	Enabled bool
 	Attrs   UserAttrs
+	// Placement says which org unit rule placed the user (display).
+	Placement string
+	// Error is a per-user mapping error that must not be resolved by a
+	// silent pick (an ambiguous org unit): the plan reports it and leaves
+	// the user untouched (not created, not changed, not suspended).
+	Error string
 }
+
+// ScopeGroup is an AD group referenced by the scope (include or exclude)
+// or by an org unit rule, as resolved in the source. The configuration
+// keeps a DN or a SID; the plan shows the group's current name.
+type ScopeGroup struct {
+	Role     string `json:"role"` // include | exclude | org_unit
+	Ref      string `json:"ref"`
+	Found    bool   `json:"found"`
+	DN       string `json:"dn,omitempty"`
+	Name     string `json:"name,omitempty"`
+	SID      string `json:"sid,omitempty"`
+	Members  int    `json:"members"`
+	Target   string `json:"target,omitempty"`
+	Priority int    `json:"priority,omitempty"`
+}
+
+// Scope roles of a ScopeGroup.
+const (
+	RoleInclude = "include"
+	RoleExclude = "exclude"
+	RoleOrgUnit = "org_unit"
+)
 
 // SourceGroup is a group as read from the source and mapped to target form.
 type SourceGroup struct {

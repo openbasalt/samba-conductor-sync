@@ -8,6 +8,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-ldap/ldap/v3"
+	"github.com/samba-conductor/ad/escape"
+	"github.com/samba-conductor/ad/sid"
 	"github.com/samba-conductor/conductor-sync/internal/model"
 )
 
@@ -32,11 +34,19 @@ type Config struct {
 	GroupAllowedDomains []string `toml:"group_allowed_domains"`
 }
 
-// OUConfig maps an AD container (and everything below it) to a target org
-// unit path. The most specific match wins.
+// OUConfig is one org unit placement rule: either an AD container (AD, and
+// everything below it) or an AD group (Group, a DN or a SID; nested
+// membership counts) mapped to a target org unit path. Group rules carry an
+// explicit Priority (1 is evaluated first). Resolution order: group rules
+// by priority, then the most specific container rule, then
+// default_org_unit. A user matching group rules of the same (best)
+// priority that point at different org units is a plan error for that
+// user, never a silent pick.
 type OUConfig struct {
-	AD     string `toml:"ad"`
-	Target string `toml:"target"`
+	AD       string `toml:"ad,omitempty"`
+	Group    string `toml:"group,omitempty"`
+	Target   string `toml:"target"`
+	Priority int    `toml:"priority,omitempty"`
 }
 
 // Defaults fills unset fields.
@@ -63,7 +73,65 @@ func (c *Config) Defaults() {
 
 type ouRule struct {
 	dn   *ldap.DN
+	src  string // as configured
 	path string
+}
+
+// groupRule places members of a group.
+type groupRule struct {
+	ref      string // as configured (DN or SID)
+	key      string // GroupKey(ref)
+	path     string
+	priority int
+}
+
+// GroupRule is a compiled group placement rule (for scope reports).
+type GroupRule struct {
+	Ref      string
+	Key      string
+	Target   string
+	Priority int
+}
+
+// Membership answers group questions about one source user.
+type Membership interface {
+	// Member reports whether the user is a (nested) member of the group
+	// with this key (GroupKey).
+	Member(key string) bool
+	// GroupName is the display name of a group key (its cn, or the
+	// configured reference when unknown).
+	GroupName(key string) string
+}
+
+// NoGroups is the membership of a user when no group is referenced.
+type NoGroups struct{}
+
+// Member implements Membership.
+func (NoGroups) Member(string) bool { return false }
+
+// GroupName implements Membership.
+func (NoGroups) GroupName(k string) string { return k }
+
+// ErrAmbiguousOrgUnit is a user matching group rules of the same priority
+// that point at different org units.
+var ErrAmbiguousOrgUnit = errors.New("ambiguous org unit")
+
+// GroupKey normalizes a group reference: "sid:S-1-5-..." for a SID (which
+// survives renames and moves), "dn:<normalized DN>" for a DN.
+func GroupKey(ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if len(ref) > 4 && strings.EqualFold(ref[:4], "S-1-") {
+		s, err := sid.Parse(strings.ToUpper(ref))
+		if err != nil {
+			return "", fmt.Errorf("invalid SID %q", ref)
+		}
+		return "sid:" + s.String(), nil
+	}
+	dn, err := ldap.ParseDN(ref)
+	if err != nil || len(dn.RDNs) == 0 {
+		return "", fmt.Errorf("invalid group reference %q (a DN or a SID)", ref)
+	}
+	return "dn:" + escape.NormalizeDN(ref), nil
 }
 
 // Rules is a compiled mapping.
@@ -75,6 +143,7 @@ type Rules struct {
 	attributes       map[model.UserField]Template
 	defaultOU        string
 	ous              []ouRule
+	groupRules       []groupRule
 	groupEmail       Chain
 	groupName        Chain
 	groupDescription Chain
@@ -131,20 +200,54 @@ func Compile(c Config) (*Rules, error) {
 	if err := validOrgUnit(c.DefaultOrgUnit); err != nil {
 		errs = append(errs, fmt.Errorf("mapping.default_org_unit: %w", err))
 	}
+	seenGroup := map[string]groupRule{}
 	for _, o := range c.OrgUnits {
-		dn, err := ldap.ParseDN(o.AD)
-		if err != nil || len(dn.RDNs) == 0 {
-			errs = append(errs, fmt.Errorf("mapping.org_units: invalid DN %q", o.AD))
+		switch {
+		case o.AD != "" && o.Group != "":
+			errs = append(errs, fmt.Errorf("mapping.org_units: a rule has either ad or group, not both (%s, %s)", o.AD, o.Group))
 			continue
+		case o.Group != "":
+			key, err := GroupKey(o.Group)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("mapping.org_units: %w", err))
+				continue
+			}
+			if o.Priority < 1 {
+				errs = append(errs, fmt.Errorf("mapping.org_units (group %s): an explicit priority >= 1 is required (1 is evaluated first)", o.Group))
+				continue
+			}
+			if err := validOrgUnit(o.Target); err != nil {
+				errs = append(errs, fmt.Errorf("mapping.org_units (group %s): %w", o.Group, err))
+				continue
+			}
+			if prev, dup := seenGroup[key]; dup {
+				errs = append(errs, fmt.Errorf("mapping.org_units: group %s has more than one rule (targets %s and %s)", o.Group, prev.path, o.Target))
+				continue
+			}
+			g := groupRule{ref: strings.TrimSpace(o.Group), key: key, path: o.Target, priority: o.Priority}
+			seenGroup[key] = g
+			r.groupRules = append(r.groupRules, g)
+		default:
+			dn, err := ldap.ParseDN(o.AD)
+			if err != nil || len(dn.RDNs) == 0 {
+				errs = append(errs, fmt.Errorf("mapping.org_units: invalid DN %q", o.AD))
+				continue
+			}
+			if o.Priority != 0 {
+				errs = append(errs, fmt.Errorf("mapping.org_units (%s): priority applies to group rules only (container rules: the most specific wins)", o.AD))
+				continue
+			}
+			if err := validOrgUnit(o.Target); err != nil {
+				errs = append(errs, fmt.Errorf("mapping.org_units (%s): %w", o.AD, err))
+				continue
+			}
+			r.ous = append(r.ous, ouRule{dn: dn, src: strings.TrimSpace(o.AD), path: o.Target})
 		}
-		if err := validOrgUnit(o.Target); err != nil {
-			errs = append(errs, fmt.Errorf("mapping.org_units (%s): %w", o.AD, err))
-			continue
-		}
-		r.ous = append(r.ous, ouRule{dn: dn, path: o.Target})
 	}
 	// Most specific (longest DN) first.
 	sort.SliceStable(r.ous, func(i, j int) bool { return len(r.ous[i].dn.RDNs) > len(r.ous[j].dn.RDNs) })
+	// Group rules by priority (1 first), declaration order within one.
+	sort.SliceStable(r.groupRules, func(i, j int) bool { return r.groupRules[i].priority < r.groupRules[j].priority })
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
@@ -159,6 +262,15 @@ func validOrgUnit(p string) error {
 		return fmt.Errorf("org unit path %q is invalid", p)
 	}
 	return nil
+}
+
+// GroupRules lists the compiled group placement rules, by priority.
+func (r *Rules) GroupRules() []GroupRule {
+	out := make([]GroupRule, len(r.groupRules))
+	for i, g := range r.groupRules {
+		out[i] = GroupRule{Ref: g.ref, Key: g.key, Target: g.path, Priority: g.priority}
+	}
+	return out
 }
 
 // ManagesGroups reports whether group addresses are mapped (groups are
@@ -220,8 +332,28 @@ func clipRunes(s string, n int) string {
 	return strings.TrimSpace(string(r[:n]))
 }
 
-// User maps a source user (its DN and attributes) to target attributes.
-func (r *Rules) User(dn string, a Attrs) (model.UserAttrs, error) {
+// User maps a source user (its DN, attributes and group memberships) to
+// target attributes. placement says which rule chose the org unit. An
+// ErrAmbiguousOrgUnit comes with the other attributes rendered.
+func (r *Rules) User(dn string, a Attrs, m Membership) (attrs model.UserAttrs, placement string, err error) {
+	if m == nil {
+		m = NoGroups{}
+	}
+	out, err := r.userAttrs(a)
+	if err != nil {
+		return nil, "", err
+	}
+	ou, placement, err := r.OrgUnitFor(dn, m)
+	if err != nil {
+		// The rendered attributes (address, names) are still returned so
+		// the plan can name the user it reports.
+		return out, "", err
+	}
+	out[model.FieldOrgUnit] = ou
+	return out, placement, nil
+}
+
+func (r *Rules) userAttrs(a Attrs) (model.UserAttrs, error) {
 	out := model.UserAttrs{}
 	email, err := r.primaryEmail.Render(a, func(v string) error { return ValidateEmail(v, r.allowed) })
 	if err != nil {
@@ -238,26 +370,54 @@ func (r *Rules) User(dn string, a Attrs) (model.UserAttrs, error) {
 	}
 	out[model.FieldGivenName] = clipRunes(gn, maxNameLen)
 	out[model.FieldFamilyName] = clipRunes(fn, maxNameLen)
-	out[model.FieldOrgUnit] = r.OrgUnitFor(dn)
 	for f, t := range r.attributes {
 		out[f] = clipRunes(t.RenderOptional(a), 256)
 	}
 	return out, nil
 }
 
-// OrgUnitFor returns the target org unit for an object at dn: the most
-// specific mapped AD container that holds it, else the default.
-func (r *Rules) OrgUnitFor(dn string) string {
-	parsed, err := ldap.ParseDN(dn)
-	if err != nil {
-		return r.defaultOU
+// OrgUnitFor returns the target org unit for a user at dn with the given
+// memberships, and which rule chose it: group rules by priority (the best
+// matching priority wins; two matches of that priority with different
+// targets are ErrAmbiguousOrgUnit), then the most specific mapped AD
+// container that holds it, then the default.
+func (r *Rules) OrgUnitFor(dn string, m Membership) (path, placement string, err error) {
+	if m == nil {
+		m = NoGroups{}
 	}
-	for _, o := range r.ous {
-		if o.dn.AncestorOfFold(parsed) {
-			return o.path
+	best := 0
+	var hits []groupRule
+	for _, g := range r.groupRules {
+		if best != 0 && g.priority != best {
+			break
+		}
+		if m.Member(g.key) {
+			best = g.priority
+			hits = append(hits, g)
 		}
 	}
-	return r.defaultOU
+	if len(hits) > 0 {
+		for _, h := range hits[1:] {
+			if !strings.EqualFold(h.path, hits[0].path) {
+				var names []string
+				for _, x := range hits {
+					names = append(names, fmt.Sprintf("%s -> %s", m.GroupName(x.key), x.path))
+				}
+				return "", "", fmt.Errorf("%w: member of groups with the same priority %d and different org units (%s)",
+					ErrAmbiguousOrgUnit, best, strings.Join(names, "; "))
+			}
+		}
+		return hits[0].path, fmt.Sprintf("group %s (priority %d)", m.GroupName(hits[0].key), best), nil
+	}
+	parsed, err := ldap.ParseDN(dn)
+	if err == nil {
+		for _, o := range r.ous {
+			if o.dn.AncestorOfFold(parsed) {
+				return o.path, "container " + o.src, nil
+			}
+		}
+	}
+	return r.defaultOU, "default", nil
 }
 
 // Group maps a source group to its target address, name and description.

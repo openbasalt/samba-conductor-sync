@@ -78,8 +78,17 @@ type Engine struct {
 	Host  string
 	Out   io.Writer
 	Now   func() time.Time
+	// OnRun, when set, is told the ID of the run as soon as it is
+	// recorded (the management API tracks background jobs with it).
+	OnRun func(runID int64)
 	// Hooks are for tests only.
 	Hooks Hooks
+}
+
+func (e *Engine) started(id int64) {
+	if e.OnRun != nil {
+		e.OnRun(id)
+	}
 }
 
 // Hooks let tests simulate a crash between a target write and its
@@ -174,6 +183,11 @@ func (e *Engine) compute(ctx context.Context, c connector.Connector) (*Computed,
 	}
 	p := plan.Compute(plan.Input{Connector: e.ConnectorName, Users: src.Users, Groups: src.Groups,
 		TargetUsers: snap.Users, TargetGroups: snap.Groups, Links: links, InFlight: inflightOf(inflight), Policy: e.Policy})
+	// Display fields (not part of the digest).
+	p.Scope, p.NotIncluded, p.Excluded = src.Scope, src.NotIncluded, src.Excluded
+	for _, s := range src.Skipped {
+		p.Skipped = append(p.Skipped, plan.SkippedObject{DN: s.DN, Reason: s.Reason})
+	}
 	prev := 0
 	if last, err := e.Store.LastRunWithStatus(ctx, e.ConnectorName, "apply", store.StatusApplied, store.StatusPartial, store.StatusNothing); err != nil {
 		return nil, err
@@ -190,16 +204,19 @@ func (e *Engine) compute(ctx context.Context, c connector.Connector) (*Computed,
 	return &Computed{Plan: p, Violations: e.Limits.Check(p, prev), Skipped: src.Skipped, PreviousSourceUsers: prev, sourceDNs: dns}, nil
 }
 
-type summary struct {
+// Summary is what a run records about its plan (runs.summary).
+type Summary struct {
 	Counts     map[plan.OpKind]int `json:"counts"`
 	Violations []plan.Violation    `json:"violations,omitempty"`
 	Warnings   int                 `json:"warnings"`
+	Errors     int                 `json:"errors,omitempty"`
 	Skipped    int                 `json:"skipped_source_objects"`
 	Note       string              `json:"note,omitempty"`
 }
 
-func summarize(c *Computed, note string) summary {
-	return summary{Counts: c.Plan.Counts(), Violations: c.Violations, Warnings: len(c.Plan.Warnings), Skipped: len(c.Skipped), Note: note}
+func summarize(c *Computed, note string) Summary {
+	return Summary{Counts: c.Plan.Counts(), Violations: c.Violations, Warnings: len(c.Plan.Warnings), Errors: len(c.Plan.Errors),
+		Skipped: len(c.Skipped), Note: note}
 }
 
 func countsText(p *plan.Plan) string {
@@ -256,6 +273,7 @@ func (e *Engine) Plan(ctx context.Context, trigger string) (*Computed, error) {
 	if err != nil {
 		return nil, err
 	}
+	e.started(runID)
 	conn, err := e.Connect(false)
 	if err != nil {
 		_ = e.Store.FinishRun(ctx, runID, store.RunResult{Status: store.StatusFailed, Error: err.Error()})
@@ -276,8 +294,8 @@ func (e *Engine) Plan(ctx context.Context, trigger string) (*Computed, error) {
 		SourceUsers: c.Plan.SourceUsers, SourceGroups: c.Plan.SourceGroups, OpsTotal: len(c.Plan.Ops), Summary: summarize(c, "")}); err != nil {
 		return nil, err
 	}
-	e.audit(ctx, "plan", fmt.Sprintf("run %d", runID), fmt.Sprintf("digest %s; %s; %d warnings; %d limit violations",
-		c.Plan.Digest, countsText(c.Plan), len(c.Plan.Warnings), len(c.Violations)), store.ResultInfo)
+	e.audit(ctx, "plan", fmt.Sprintf("run %d", runID), fmt.Sprintf("digest %s; %s; %d warnings; %d plan errors; %d limit violations",
+		c.Plan.Digest, countsText(c.Plan), len(c.Plan.Warnings), len(c.Plan.Errors), len(c.Violations)), store.ResultInfo)
 	e.writeMetrics(ctx, "plan", store.StatusPlanned, started, c, 0, 0, conn)
 	return c, nil
 }
@@ -294,6 +312,9 @@ type ApplyOptions struct {
 	// Confirm shows the plan and asks; nil refuses unless Yes.
 	Confirm func(c *Computed) bool
 	Yes     bool
+	// Note is added to the run's audit entries (e.g. "overrides blocked
+	// run 12; reviewed plan run 14").
+	Note string
 }
 
 // ApplyResult reports an apply.
@@ -334,6 +355,7 @@ func (e *Engine) Apply(ctx context.Context, opt ApplyOptions) (*ApplyResult, err
 	if err != nil {
 		return nil, err
 	}
+	e.started(runID)
 	finish := func(status string, c *Computed, done, failed int, errText string, conn connector.Connector) {
 		rr := store.RunResult{Status: status, OpsDone: done, OpsFailed: failed, Error: errText}
 		if c != nil {
@@ -432,9 +454,17 @@ func (e *Engine) Apply(ctx context.Context, opt ApplyOptions) (*ApplyResult, err
 	note := ""
 	if len(c.Violations) > 0 {
 		note = "safety limits overridden by the operator"
-		e.audit(ctx, "apply.override-limits", fmt.Sprintf("run %d", runID), fmt.Sprintf("digest %s; %v", c.Plan.Digest, c.Violations), store.ResultInfo)
+		detail := fmt.Sprintf("digest %s; %v", c.Plan.Digest, c.Violations)
+		if opt.Note != "" {
+			detail += "; " + opt.Note
+		}
+		e.audit(ctx, "apply.override-limits", fmt.Sprintf("run %d", runID), detail, store.ResultInfo)
 	}
-	e.audit(ctx, "apply.start", fmt.Sprintf("run %d", runID), fmt.Sprintf("%s run; digest %s; %s", trigger, c.Plan.Digest, countsText(c.Plan)), store.ResultInfo)
+	startDetail := fmt.Sprintf("%s run; digest %s; %s", trigger, c.Plan.Digest, countsText(c.Plan))
+	if opt.Note != "" {
+		startDetail += "; " + opt.Note
+	}
+	e.audit(ctx, "apply.start", fmt.Sprintf("run %d", runID), startDetail, store.ResultInfo)
 	if err := e.Store.JournalOps(ctx, runID, c.Plan.Ops); err != nil {
 		return nil, err
 	}

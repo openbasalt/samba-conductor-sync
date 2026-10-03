@@ -2,6 +2,14 @@
 // a read-only service account, LDAPS with the domain CA pinned, paged
 // searches below the configured bases, and ranged retrieval of group
 // members. It returns users and groups already mapped to the target model.
+//
+// Scope: users below user_bases (minus exclude_bases) that are members,
+// nested membership included, of at least one include group (when any is
+// configured) and of no exclude group (exclusion wins). Groups are
+// referenced by DN or by SID; SIDs survive renames and moves. Every
+// referenced group must resolve: a group that cannot be found stops the
+// read, so a deleted or renamed group never silently empties (or widens)
+// the scope.
 package adsource
 
 import (
@@ -16,6 +24,7 @@ import (
 	"github.com/go-ldap/ldap/v3"
 	"github.com/samba-conductor/ad"
 	"github.com/samba-conductor/ad/escape"
+	"github.com/samba-conductor/ad/sid"
 	"github.com/samba-conductor/conductor-sync/internal/mapping"
 	"github.com/samba-conductor/conductor-sync/internal/model"
 	"github.com/samba-conductor/conductor-sync/internal/source"
@@ -41,12 +50,33 @@ type Config struct {
 	UserBases    []string `toml:"user_bases"`
 	GroupBases   []string `toml:"group_bases"`
 	ExcludeBases []string `toml:"exclude_bases"`
-	// RequireGroup restricts users to (transitive) members of this group DN.
-	RequireGroup string `toml:"require_group"`
+	// IncludeGroups restricts users to (nested) members of any of these
+	// groups (DN or SID); ExcludeGroups removes (nested) members of any of
+	// them, even when included.
+	IncludeGroups []string `toml:"include_groups,omitempty"`
+	ExcludeGroups []string `toml:"exclude_groups,omitempty"`
+	// RequireGroup is the P5 single-group form, accepted as a one-item
+	// alias of IncludeGroups.
+	RequireGroup string `toml:"require_group,omitempty"`
 	// ExpiredAsDisabled treats accounts past accountExpires as disabled.
 	ExpiredAsDisabled *bool `toml:"expired_as_disabled"`
 	// PageSize of the paged searches (default 500).
-	PageSize uint32 `toml:"page_size"`
+	PageSize uint32 `toml:"page_size,omitempty"`
+}
+
+// Includes returns the include groups, with the require_group alias.
+func (c *Config) Includes() []string {
+	out := append([]string(nil), c.IncludeGroups...)
+	if c.RequireGroup != "" {
+		k, _ := mapping.GroupKey(c.RequireGroup)
+		for _, g := range out {
+			if gk, _ := mapping.GroupKey(g); gk == k {
+				return out
+			}
+		}
+		out = append(out, c.RequireGroup)
+	}
+	return out
 }
 
 // Validate checks the section.
@@ -66,19 +96,40 @@ func (c *Config) Validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("source.auth %q: want kerberos or simple", c.Auth))
 	}
+	errs = append(errs, c.ValidateScope())
+	return errors.Join(errs...)
+}
+
+// ValidateScope checks the scope part (bases and groups).
+func (c *Config) ValidateScope() error {
+	var errs []error
 	if len(c.UserBases) == 0 {
 		errs = append(errs, errors.New("source.user_bases: at least one base DN is required"))
 	}
 	for _, list := range [][]string{c.UserBases, c.GroupBases, c.ExcludeBases} {
 		for _, dn := range list {
-			if _, err := escape.ParseDN(dn); err != nil {
+			if _, err := escape.ParseDN(dn); err != nil || strings.TrimSpace(dn) == "" {
 				errs = append(errs, fmt.Errorf("source: invalid DN %q", dn))
 			}
 		}
 	}
-	if c.RequireGroup != "" {
-		if _, err := escape.ParseDN(c.RequireGroup); err != nil {
-			errs = append(errs, fmt.Errorf("source.require_group: invalid DN %q", c.RequireGroup))
+	inc := map[string]bool{}
+	for _, g := range c.Includes() {
+		k, err := mapping.GroupKey(g)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("source.include_groups: %w", err))
+			continue
+		}
+		inc[k] = true
+	}
+	for _, g := range c.ExcludeGroups {
+		k, err := mapping.GroupKey(g)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("source.exclude_groups: %w", err))
+			continue
+		}
+		if inc[k] {
+			errs = append(errs, fmt.Errorf("source: group %s is both included and excluded", g))
 		}
 	}
 	return errors.Join(errs...)
@@ -154,24 +205,8 @@ func (a entryAttrs) Get(name string) string {
 	return ""
 }
 
-// DNKey normalizes a DN for map lookups: RFC 4514 parsed, types and values
-// lowercased (AD compares naming attributes case-insensitively).
-func DNKey(dn string) string {
-	parsed, err := ldap.ParseDN(dn)
-	if err != nil {
-		return strings.ToLower(dn)
-	}
-	parts := make([]string, 0, len(parsed.RDNs))
-	for _, r := range parsed.RDNs {
-		comps := make([]string, 0, len(r.Attributes))
-		for _, a := range r.Attributes {
-			comps = append(comps, strings.ToLower(a.Type)+"="+escape.DNValue(strings.ToLower(a.Value)))
-		}
-		sort.Strings(comps)
-		parts = append(parts, strings.Join(comps, "+"))
-	}
-	return strings.Join(parts, ",")
-}
+// DNKey normalizes a DN for map lookups (escape.NormalizeDN).
+func DNKey(dn string) string { return escape.NormalizeDN(dn) }
 
 func union(a []string, b ...string) []string {
 	seen := map[string]bool{}
@@ -220,13 +255,223 @@ func (r *Reader) excluded(dn string) bool {
 	return false
 }
 
+// ---- referenced groups ----
+
+// refGroup is one referenced group, resolved, with its user members below
+// the user bases (by objectGUID).
+type refGroup struct {
+	key     string
+	ref     string
+	found   bool
+	dn      string
+	name    string
+	sid     string
+	members map[string]bool
+}
+
+// scopeGroups resolves every group the scope and the org unit rules
+// reference. Missing groups are returned with found=false.
+type scopeGroups struct {
+	byKey   map[string]*refGroup
+	include []*refGroup
+	exclude []*refGroup
+	report  []model.ScopeGroup
+}
+
+// membership implements mapping.Membership for one user.
+type membership struct {
+	g    *scopeGroups
+	guid string
+}
+
+func (m membership) Member(key string) bool {
+	rg := m.g.byKey[key]
+	return rg != nil && rg.members[m.guid]
+}
+
+func (m membership) GroupName(key string) string {
+	if rg := m.g.byKey[key]; rg != nil {
+		if rg.name != "" {
+			return rg.name
+		}
+		return rg.ref
+	}
+	return key
+}
+
+// decide applies the include and exclude groups to one user.
+func (g *scopeGroups) decide(guid string) (in bool, reason string) {
+	if len(g.include) > 0 {
+		in = false
+		for _, rg := range g.include {
+			if rg.members[guid] {
+				in = true
+				break
+			}
+		}
+		if !in {
+			return false, "not a member of any include group"
+		}
+	}
+	for _, rg := range g.exclude {
+		if rg.members[guid] {
+			return false, "member of the exclude group " + displayName(rg)
+		}
+	}
+	return true, ""
+}
+
+func displayName(rg *refGroup) string {
+	if rg.name != "" {
+		return rg.name
+	}
+	return rg.ref
+}
+
+// missing lists the referenced groups that were not found.
+func (g *scopeGroups) missing() []string {
+	var out []string
+	for _, s := range g.report {
+		if !s.Found {
+			out = append(out, fmt.Sprintf("%s group %s", s.Role, s.Ref))
+		}
+	}
+	return out
+}
+
+func (r *Reader) resolveGroups(ctx context.Context, conn *ad.Conn) (*scopeGroups, error) {
+	g := &scopeGroups{byKey: map[string]*refGroup{}}
+	get := func(ref string) (*refGroup, error) {
+		key, err := mapping.GroupKey(ref)
+		if err != nil {
+			return nil, err
+		}
+		if rg, ok := g.byKey[key]; ok {
+			return rg, nil
+		}
+		rg := &refGroup{key: key, ref: ref, members: map[string]bool{}}
+		g.byKey[key] = rg
+		if err := r.lookupGroup(ctx, conn, rg); err != nil {
+			return nil, err
+		}
+		if rg.found {
+			if err := r.groupUserMembers(ctx, conn, rg); err != nil {
+				return nil, err
+			}
+		}
+		return rg, nil
+	}
+	add := func(role string, rg *refGroup, target string, prio int) {
+		g.report = append(g.report, model.ScopeGroup{Role: role, Ref: rg.ref, Found: rg.found, DN: rg.dn, Name: rg.name,
+			SID: rg.sid, Members: len(rg.members), Target: target, Priority: prio})
+	}
+	for _, ref := range r.cfg.Includes() {
+		rg, err := get(ref)
+		if err != nil {
+			return nil, err
+		}
+		g.include = append(g.include, rg)
+		add(model.RoleInclude, rg, "", 0)
+	}
+	for _, ref := range r.cfg.ExcludeGroups {
+		rg, err := get(ref)
+		if err != nil {
+			return nil, err
+		}
+		g.exclude = append(g.exclude, rg)
+		add(model.RoleExclude, rg, "", 0)
+	}
+	if r.rules != nil {
+		for _, rule := range r.rules.GroupRules() {
+			rg, err := get(rule.Ref)
+			if err != nil {
+				return nil, err
+			}
+			add(model.RoleOrgUnit, rg, rule.Target, rule.Priority)
+		}
+	}
+	return g, nil
+}
+
+// lookupGroup finds a group by SID (anywhere in the domain) or by DN.
+func (r *Reader) lookupGroup(ctx context.Context, conn *ad.Conn, rg *refGroup) error {
+	attrs := []string{"cn", "objectSid", "objectGUID", "objectClass"}
+	var e *ldap.Entry
+	if strings.HasPrefix(rg.key, "sid:") {
+		s, err := sid.Parse(strings.TrimPrefix(rg.key, "sid:"))
+		if err != nil {
+			return err
+		}
+		entries, err := conn.SearchAll(ctx, ad.SearchRequest{Filter: escape.And(groupClass, escape.EqBytes("objectSid", s.Bytes())),
+			Attributes: attrs, Limit: 2})
+		if err != nil {
+			return fmt.Errorf("source: group %s: %w", rg.ref, err)
+		}
+		if len(entries) == 1 {
+			e = entries[0]
+		}
+	} else {
+		entry, err := conn.Get(ctx, rg.ref, attrs...)
+		if err != nil && !errors.Is(err, ad.ErrNotFound) {
+			return fmt.Errorf("source: group %s: %w", rg.ref, err)
+		}
+		if entry != nil && isGroup(entry) {
+			e = entry
+		}
+	}
+	if e == nil {
+		return nil
+	}
+	rg.found, rg.dn, rg.name = true, e.DN, e.GetAttributeValue("cn")
+	if raw := e.GetRawAttributeValue("objectSid"); len(raw) > 0 {
+		if s, err := sid.FromBytes(raw); err == nil {
+			rg.sid = s.String()
+		}
+	}
+	return nil
+}
+
+func isGroup(e *ldap.Entry) bool {
+	for _, c := range e.GetAttributeValues("objectClass") {
+		if strings.EqualFold(c, "group") {
+			return true
+		}
+	}
+	return false
+}
+
+// groupUserMembers fills the (nested) user members of a group below the
+// user bases. Primary-group membership (Domain Users) is not a member
+// value and does not count.
+func (r *Reader) groupUserMembers(ctx context.Context, conn *ad.Conn, rg *refGroup) error {
+	for _, base := range r.cfg.UserBases {
+		for e, err := range conn.Search(ctx, ad.SearchRequest{BaseDN: base, Filter: escape.And(userClass, escape.InChain("memberOf", rg.dn)),
+			Attributes: []string{"objectGUID"}, PageSize: r.cfg.PageSize}) {
+			if err != nil {
+				return fmt.Errorf("source: members of %s below %s: %w", rg.ref, base, err)
+			}
+			raw := e.GetRawAttributeValue("objectGUID")
+			if g, err := sid.GUIDFromBytes(raw); err == nil {
+				rg.members[g.String()] = true
+			}
+		}
+	}
+	return nil
+}
+
 // ReadWith reads through an existing connection.
 func (r *Reader) ReadWith(ctx context.Context, conn *ad.Conn) (*source.Result, error) {
 	res := &source.Result{}
-	userFilter := escape.And(userClass, notCritical)
-	if r.cfg.RequireGroup != "" {
-		userFilter = escape.And(userClass, notCritical, escape.InChain("memberOf", r.cfg.RequireGroup))
+	sg, err := r.resolveGroups(ctx, conn)
+	if err != nil {
+		return nil, err
 	}
+	res.Scope = sg.report
+	if miss := sg.missing(); len(miss) > 0 {
+		return nil, fmt.Errorf("source: referenced groups not found: %s (fix the configuration; a SID reference survives renames and moves)",
+			strings.Join(miss, ", "))
+	}
+	userFilter := escape.And(userClass, notCritical)
 	attrs := union(ad.UserAttributes, r.rules.UserAttributes()...)
 	seen := map[string]bool{}
 	now := r.now()
@@ -249,16 +494,29 @@ func (r *Reader) ReadWith(ctx context.Context, conn *ad.Conn) (*source.Result, e
 				continue
 			}
 			seen[id] = true
-			mapped, err := r.rules.User(e.DN, entryAttrs{e})
-			if err != nil {
-				res.Skipped = append(res.Skipped, source.Skipped{DN: e.DN, Reason: err.Error()})
+			if in, reason := sg.decide(id); !in {
+				if strings.HasPrefix(reason, "member of the exclude") {
+					res.Excluded++
+				} else {
+					res.NotIncluded++
+				}
 				continue
+			}
+			mapped, placement, err := r.rules.User(e.DN, entryAttrs{e}, membership{g: sg, guid: id})
+			userErr := ""
+			if err != nil {
+				if !errors.Is(err, mapping.ErrAmbiguousOrgUnit) || mapped == nil {
+					res.Skipped = append(res.Skipped, source.Skipped{DN: e.DN, Reason: err.Error()})
+					continue
+				}
+				userErr = err.Error()
 			}
 			enabled := u.Enabled()
 			if enabled && r.cfg.expiredAsDisabled() && u.AccountExpired(now) {
 				enabled = false
 			}
-			res.Users = append(res.Users, model.SourceUser{ID: id, DN: e.DN, Account: u.SAMAccountName, Enabled: enabled, Attrs: mapped})
+			res.Users = append(res.Users, model.SourceUser{ID: id, DN: e.DN, Account: u.SAMAccountName, Enabled: enabled, Attrs: mapped,
+				Placement: placement, Error: userErr})
 			dnIndex[DNKey(e.DN)] = model.MemberRef{Kind: model.KindUser, ID: id}
 		}
 	}
@@ -300,6 +558,7 @@ func (r *Reader) ReadWith(ctx context.Context, conn *ad.Conn) (*source.Result, e
 		}
 	}
 	// Members: one ranged read per group (large groups exceed one range).
+	// Only users and groups in scope become members.
 	for i := range groups {
 		members, err := conn.GroupMembers(ctx, groups[i].dn)
 		if err != nil {
@@ -314,4 +573,98 @@ func (r *Reader) ReadWith(ctx context.Context, conn *ad.Conn) (*source.Result, e
 		res.Groups = append(res.Groups, groups[i].g)
 	}
 	return res, nil
+}
+
+// ---- preview and connection test (no write anywhere) ----
+
+// Check connects, resolves the referenced groups (missing ones are
+// reported, not fatal) and counts the users below the bases.
+func (r *Reader) Check(ctx context.Context) (detail string, groups []model.ScopeGroup, err error) {
+	conn, closeFn, err := r.connect(ctx)
+	if err != nil {
+		return "", nil, fmt.Errorf("connect: %w", err)
+	}
+	defer closeFn()
+	sg, err := r.resolveGroups(ctx, conn)
+	if err != nil {
+		return "", nil, err
+	}
+	total := 0
+	for _, base := range r.cfg.UserBases {
+		n, err := conn.Count(ctx, ad.SearchRequest{BaseDN: base, Filter: escape.And(userClass, notCritical)})
+		if err != nil {
+			return "", sg.report, fmt.Errorf("users below %s: %w", base, err)
+		}
+		total += n
+	}
+	detail = fmt.Sprintf("connected to %s as %s; %d users below the user bases", conn.DC().Host, r.cfg.BindUser, total)
+	if miss := sg.missing(); len(miss) > 0 {
+		return detail, sg.report, fmt.Errorf("referenced groups not found: %s", strings.Join(miss, ", "))
+	}
+	return detail, sg.report, nil
+}
+
+// Preview is the mapping of one sample user.
+type Preview struct {
+	Account, DN                      string
+	Enabled, InScope                 bool
+	OutReason                        string
+	Email, GivenName, FamilyName, OU string
+	Placement, Error                 string
+}
+
+// Preview renders the mapping of up to limit users below the user bases
+// (matching query when set), whether in scope or not, with the reason.
+func (r *Reader) Preview(ctx context.Context, query string, limit int) ([]Preview, []model.ScopeGroup, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	conn, closeFn, err := r.connect(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect: %w", err)
+	}
+	defer closeFn()
+	sg, err := r.resolveGroups(ctx, conn)
+	if err != nil {
+		return nil, nil, err
+	}
+	f := escape.And(userClass, notCritical)
+	if q := strings.TrimSpace(query); q != "" {
+		f = escape.And(userClass, notCritical, escape.Or(escape.Contains("sAMAccountName", q), escape.Contains("displayName", q),
+			escape.Contains("mail", q), escape.Contains("cn", q)))
+	}
+	attrs := union(ad.UserAttributes, r.rules.UserAttributes()...)
+	var out []Preview
+	now := r.now()
+	for _, base := range r.cfg.UserBases {
+		for e, err := range conn.Search(ctx, ad.SearchRequest{BaseDN: base, Filter: f, Attributes: attrs, PageSize: r.cfg.PageSize,
+			SortBy: "sAMAccountName", Limit: limit - len(out)}) {
+			if err != nil {
+				return nil, sg.report, fmt.Errorf("users below %s: %w", base, err)
+			}
+			u := ad.UserFromEntry(e)
+			p := Preview{Account: u.SAMAccountName, DN: e.DN, Enabled: u.Enabled() && !(r.cfg.expiredAsDisabled() && u.AccountExpired(now))}
+			id := u.GUID.String()
+			switch {
+			case r.excluded(e.DN):
+				p.OutReason = "below an excluded base"
+			default:
+				p.InScope, p.OutReason = sg.decide(id)
+			}
+			mapped, placement, err := r.rules.User(e.DN, entryAttrs{e}, membership{g: sg, guid: id})
+			if err != nil {
+				p.Error = err.Error()
+			}
+			if mapped != nil {
+				p.Email, p.GivenName, p.FamilyName, p.OU = mapped[model.FieldPrimaryEmail], mapped[model.FieldGivenName],
+					mapped[model.FieldFamilyName], mapped[model.FieldOrgUnit]
+			}
+			p.Placement = placement
+			out = append(out, p)
+		}
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, sg.report, nil
 }

@@ -233,3 +233,36 @@ func TestOpString(t *testing.T) {
 		t.Fatal(s)
 	}
 }
+
+func TestPlanErrorLeavesUserUntouched(t *testing.T) {
+	amb := su("a", "a@x.com", true)
+	amb.Error = "ambiguous org unit: member of groups with the same priority 10 and different org units"
+	moved := su("b", "b@x.com", true)
+	moved.Attrs[model.FieldOrgUnit] = "/Finance"
+	moved.Placement = "group Finance (priority 10)"
+	in := Input{
+		Users:       []model.SourceUser{amb, moved},
+		TargetUsers: []model.TargetUser{tu("1", "a", "a@x.com", false), tu("2", "b", "b@x.com", false)},
+		Groups: []model.SourceGroup{{ID: "g", Email: "g@x.com", Name: "G",
+			Members: []model.MemberRef{{Kind: model.KindUser, ID: "b"}}}},
+		TargetGroups: []model.TargetGroup{{ID: "G1", Email: "g@x.com", Name: "G", Members: []model.TargetMember{
+			{ID: "1", Email: "a@x.com", Kind: model.KindUser}, {ID: "2", Email: "b@x.com", Kind: model.KindUser}}}},
+		Links: []Link{
+			{Kind: model.KindUser, SourceID: "a", TargetID: "1", Key: "a@x.com"},
+			{Kind: model.KindUser, SourceID: "b", TargetID: "2", Key: "b@x.com"},
+			{Kind: model.KindGroup, SourceID: "g", TargetID: "G1", Key: "g@x.com"},
+		},
+		Policy: Policy{SuspendDisabled: true, ManageGroups: true},
+	}
+	p := Compute(in)
+	// a is neither suspended (it is in scope) nor removed from the group.
+	if got := kinds(p); got != "user.update:b@x.com" {
+		t.Fatalf("ops: %s", got)
+	}
+	if len(p.Errors) != 1 || p.Errors[0].Code != ErrOrgUnitAmbiguous || p.Errors[0].Key != "a@x.com" {
+		t.Fatalf("errors: %+v", p.Errors)
+	}
+	if r := p.Ops[0].Reason; r != "org unit from group Finance (priority 10)" {
+		t.Fatalf("reason %q", r)
+	}
+}

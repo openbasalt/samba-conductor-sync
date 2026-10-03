@@ -82,7 +82,10 @@ func TestRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err := r.User("CN=x,OU=Engineering,OU=People,OU=Lab,DC=x", MapAttrs{"samaccountname": "Zoë", "givenname": "", "displayname": "Zoë Q", "sn": "Q", "title": "CTO"})
+	u, placement, err := r.User("CN=x,OU=Engineering,OU=People,OU=Lab,DC=x", MapAttrs{"samaccountname": "Zoë", "givenname": "", "displayname": "Zoë Q", "sn": "Q", "title": "CTO"}, nil)
+	if err != nil || !strings.HasPrefix(placement, "container ") {
+		t.Fatal(err, placement)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,11 +96,11 @@ func TestRules(t *testing.T) {
 	if _, ok := u[model.FieldDepartment]; ok {
 		t.Fatal("unmapped field present")
 	}
-	if got := r.OrgUnitFor("CN=y,OU=Sales,OU=People,OU=Lab,DC=x"); got != "/Staff" {
+	if got, _, _ := r.OrgUnitFor("CN=y,OU=Sales,OU=People,OU=Lab,DC=x", nil); got != "/Staff" {
 		t.Fatalf("parent mapping %q", got)
 	}
-	if got := r.OrgUnitFor("CN=y,OU=Other,DC=x"); got != "/" {
-		t.Fatalf("default %q", got)
+	if got, how, _ := r.OrgUnitFor("CN=y,OU=Other,DC=x", nil); got != "/" || how != "default" {
+		t.Fatalf("default %q %q", got, how)
 	}
 	email, name, _, err := r.Group(MapAttrs{"samaccountname": "Big Group", "cn": "Big Group"})
 	if err != nil || email != "big-group@groups.example.com" || name != "Big Group" {
@@ -121,6 +124,107 @@ func TestCompileErrors(t *testing.T) {
 		t.Fatal("bad config accepted")
 	}
 	for _, want := range []string{"unknown filter", "allowed_domains", "shoe_size", "invalid DN", "must start with /"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error lacks %q: %v", want, err)
+		}
+	}
+}
+
+// groups is a test membership: the set of group keys a user belongs to.
+type groups map[string]bool
+
+func (g groups) Member(k string) bool { return g[k] }
+func (g groups) GroupName(k string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(k, "sid:"), "dn:")
+}
+
+func key(t *testing.T, ref string) string {
+	t.Helper()
+	k, err := GroupKey(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
+func TestGroupRules(t *testing.T) {
+	const (
+		finance  = "CN=Finance,OU=Groups,DC=x"
+		managers = "S-1-5-21-1-2-3-1105"
+		contract = "cn=contractors,ou=groups,dc=X"
+		auditors = "S-1-5-21-1-2-3-1200"
+	)
+	r, err := Compile(Config{
+		PrimaryEmail:   []string{"{sAMAccountName}@example.com"},
+		AllowedDomains: []string{"example.com"},
+		DefaultOrgUnit: "/Default",
+		OrgUnits: []OUConfig{
+			{AD: "OU=People,DC=x", Target: "/Staff"},
+			{Group: finance, Target: "/Finance", Priority: 20},
+			{Group: managers, Target: "/Managers", Priority: 10},
+			{Group: contract, Target: "/Contractors", Priority: 20},
+			{Group: auditors, Target: "/finance", Priority: 20},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dn := "CN=u,OU=Sales,OU=People,DC=x"
+	cases := []struct {
+		name      string
+		in        []string
+		want, how string
+		err       bool
+	}{
+		{"no group: container rule", nil, "/Staff", "container OU=People,DC=x", false},
+		{"one group", []string{finance}, "/Finance", "group cn=finance,ou=groups,dc=x (priority 20)", false},
+		{"lower priority number wins", []string{finance, managers}, "/Managers", "group S-1-5-21-1-2-3-1105 (priority 10)", false},
+		{"same priority, different targets", []string{finance, contract}, "", "", true},
+		{"same priority, same target (case-insensitive)", []string{finance, auditors}, "/Finance", "group", false},
+		{"DN keys are normalized", []string{"CN=Contractors,OU=Groups,DC=x"}, "/Contractors", "group", false},
+	}
+	for _, c := range cases {
+		m := groups{}
+		for _, ref := range c.in {
+			m[key(t, ref)] = true
+		}
+		got, how, err := r.OrgUnitFor(dn, m)
+		if c.err {
+			if !errors.Is(err, ErrAmbiguousOrgUnit) {
+				t.Errorf("%s: err %v, want ambiguous", c.name, err)
+			}
+			continue
+		}
+		if err != nil || got != c.want || !strings.HasPrefix(how, c.how) {
+			t.Errorf("%s: %q %q %v, want %q %q", c.name, got, how, err, c.want, c.how)
+		}
+	}
+	if got, how, _ := r.OrgUnitFor("CN=u,OU=Elsewhere,DC=x", groups{}); got != "/Default" || how != "default" {
+		t.Errorf("default: %q %q", got, how)
+	}
+	// The user method reports the ambiguity as an error for that user.
+	if _, _, err := r.User(dn, MapAttrs{"samaccountname": "u", "sn": "U"}, groups{key(t, finance): true, key(t, contract): true}); !errors.Is(err, ErrAmbiguousOrgUnit) {
+		t.Errorf("User: %v", err)
+	}
+	if rules := r.GroupRules(); len(rules) != 4 || rules[0].Priority != 10 {
+		t.Errorf("GroupRules order: %+v", rules)
+	}
+}
+
+func TestGroupRuleErrors(t *testing.T) {
+	_, err := Compile(Config{PrimaryEmail: []string{"{a}@example.com"}, AllowedDomains: []string{"example.com"},
+		OrgUnits: []OUConfig{
+			{Group: "CN=G,DC=x", Target: "/a"},                  // no priority
+			{Group: "S-1-bogus", Target: "/a", Priority: 1},     // bad SID
+			{AD: "OU=a,DC=x", Group: "CN=G,DC=x", Target: "/a"}, // both
+			{AD: "OU=b,DC=x", Target: "/b", Priority: 3},        // priority on a container rule
+			{Group: "CN=H,DC=x", Target: "/h", Priority: 1},     // fine
+			{Group: "cn=h,dc=X", Target: "/other", Priority: 2}, // same group twice
+		}})
+	if err == nil {
+		t.Fatal("accepted")
+	}
+	for _, want := range []string{"explicit priority", "invalid SID", "not both", "group rules only", "more than one rule"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error lacks %q: %v", want, err)
 		}

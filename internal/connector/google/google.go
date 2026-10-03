@@ -37,18 +37,20 @@ type Config struct {
 	// AdminSubject is the administrator the service account acts as.
 	AdminSubject string `toml:"admin_subject"`
 	// KeyCredential names the service account JSON key: a systemd
-	// credential name or an absolute path to a 0600 file.
-	KeyCredential string `toml:"key_credential"`
+	// credential name or an absolute path to a 0600 file. Optional when
+	// the key is set through the management API (stored encrypted in the
+	// state database, which then takes precedence).
+	KeyCredential string `toml:"key_credential,omitempty"`
 	// Marker is the externalIds customType that marks owned accounts. Two
 	// sync instances writing to one tenant must use different markers.
 	Marker string `toml:"marker"`
 	// APIBaseURL and TokenURL exist for tests and proxies; both must be
 	// HTTPS.
 	APIBaseURL string `toml:"api_base_url"`
-	TokenURL   string `toml:"token_url"`
+	TokenURL   string `toml:"token_url,omitempty"`
 	// CAFile adds a CA for APIBaseURL/TokenURL (a TLS-inspecting proxy or
 	// a test server). Leave empty for Google.
-	CAFile            string   `toml:"ca_file"`
+	CAFile            string   `toml:"ca_file,omitempty"`
 	RequestsPerSecond float64  `toml:"requests_per_second"`
 	MaxRetries        int      `toml:"max_retries"`
 	Timeout           Duration `toml:"timeout"`
@@ -58,6 +60,9 @@ type Config struct {
 
 // Duration decodes "30s" style TOML strings.
 type Duration struct{ time.Duration }
+
+// MarshalText implements encoding.TextMarshaler (configuration export).
+func (d Duration) MarshalText() ([]byte, error) { return []byte(d.Duration.String()), nil }
 
 // UnmarshalText implements encoding.TextUnmarshaler.
 func (d *Duration) UnmarshalText(b []byte) error {
@@ -99,9 +104,6 @@ func (c *Config) Validate() error {
 	var errs []error
 	if c.AdminSubject == "" || !strings.Contains(c.AdminSubject, "@") {
 		errs = append(errs, errors.New("google.admin_subject: the administrator address to act as is required"))
-	}
-	if c.KeyCredential == "" {
-		errs = append(errs, errors.New("google.key_credential is required"))
 	}
 	for name, raw := range map[string]string{"api_base_url": c.APIBaseURL, "token_url": c.TokenURL} {
 		if raw == "" {

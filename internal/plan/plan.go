@@ -175,17 +175,40 @@ const (
 	WarnProtected         = "protected-account"
 )
 
+// Plan error codes: a per-object problem the operator must fix; the object
+// is left untouched (not created, changed, suspended or removed from
+// groups) until then.
+const (
+	ErrOrgUnitAmbiguous = "org-unit-ambiguous"
+)
+
+// SkippedObject is a source object that could not be mapped.
+type SkippedObject struct {
+	DN     string `json:"dn"`
+	Reason string `json:"reason"`
+}
+
 // Plan is the outcome of Compute.
 type Plan struct {
-	Connector    string    `json:"connector"`
-	Ops          []Op      `json:"ops"`
-	Warnings     []Warning `json:"warnings,omitempty"`
+	Connector string    `json:"connector"`
+	Ops       []Op      `json:"ops"`
+	Warnings  []Warning `json:"warnings,omitempty"`
+	// Errors are per-object plan errors (the object is left untouched).
+	Errors       []Warning `json:"errors,omitempty"`
 	SourceUsers  int       `json:"source_users"`
 	SourceGroups int       `json:"source_groups"`
 	// ManagedUsers counts links to existing target users before the run.
 	ManagedUsers  int    `json:"managed_users"`
 	ManagedGroups int    `json:"managed_groups"`
 	Digest        string `json:"digest"`
+
+	// Display only (not in the digest): the referenced groups as
+	// resolved, users left out by the include and exclude groups, and
+	// source objects that could not be mapped. Set by the engine.
+	Scope       []model.ScopeGroup `json:"scope,omitempty"`
+	NotIncluded int                `json:"not_included,omitempty"`
+	Excluded    int                `json:"excluded,omitempty"`
+	Skipped     []SkippedObject    `json:"skipped,omitempty"`
 }
 
 // Counts returns how many operations of each kind the plan holds.
@@ -280,6 +303,10 @@ type planner struct {
 	in   Input
 	ops  []Op
 	warn []Warning
+	errs []Warning
+	// frozen source users are left untouched (plan error or duplicate
+	// address): no suspension, no membership removal.
+	frozen map[string]bool
 
 	tUserByID    map[string]*model.TargetUser
 	tUserByEmail map[string]*model.TargetUser // primary and aliases
@@ -310,6 +337,7 @@ func Compute(in Input) *Plan {
 		userLinkBySrc: map[string]Link{}, userLinkByTgt: map[string]Link{}, groupLinkBySrc: map[string]Link{}, groupLinkByTgt: map[string]Link{},
 		managedUser: map[string]string{}, managedGroup: map[string]string{},
 		srcUser: map[string]*model.SourceUser{}, srcGroup: map[string]*model.SourceGroup{}, inflight: map[string]InFlight{},
+		frozen: map[string]bool{},
 	}
 	if p.in.Policy.Adopt == "" {
 		p.in.Policy.Adopt = AdoptNever
@@ -345,7 +373,8 @@ func Compute(in Input) *Plan {
 		}
 		return p.warn[i].Key < p.warn[j].Key
 	})
-	out := &Plan{Connector: in.Connector, Ops: p.ops, Warnings: p.warn,
+	sort.SliceStable(p.errs, func(i, j int) bool { return p.errs[i].Key < p.errs[j].Key })
+	out := &Plan{Connector: in.Connector, Ops: p.ops, Warnings: p.warn, Errors: p.errs,
 		SourceUsers: len(in.Users), SourceGroups: len(in.Groups)}
 	for _, l := range in.Links {
 		switch l.Kind {
@@ -456,9 +485,18 @@ func (p *planner) users() {
 			continue
 		}
 		seenSource[su.ID] = true
+		if su.Error != "" {
+			// A per-user mapping error (an ambiguous org unit) is never
+			// resolved by a silent pick: report it and leave the user,
+			// its account and its memberships as they are.
+			p.frozen[su.ID] = true
+			p.errs = append(p.errs, Warning{Code: ErrOrgUnitAmbiguous, Key: email, Message: su.Account + ": " + su.Error})
+			continue
+		}
 		if len(byEmail[email]) > 1 {
 			p.warnf(WarnDuplicateAddress, email, "%d source users map to this address (%s); none of them is synced until fixed", len(byEmail[email]), su.Account)
 			// Keep an existing link from being suspended as "out of scope".
+			p.frozen[su.ID] = true
 			continue
 		}
 		if groupEmails[email] {
@@ -585,6 +623,10 @@ func (p *planner) user(su *model.SourceUser, email string) {
 	}
 	p.managedUser[su.ID] = tu.ID
 	if changes := diffUser(tu.Attrs, desired, p.managedFields()); len(changes) > 0 {
+		reason := ""
+		if hasChange(changes, string(model.FieldOrgUnit)) && su.Placement != "" {
+			reason = "org unit from " + su.Placement
+		}
 		kind := UserUpdate
 		if hasChange(changes, string(model.FieldPrimaryEmail)) {
 			kind = UserRename
@@ -594,7 +636,7 @@ func (p *planner) user(su *model.SourceUser, email string) {
 				return
 			}
 		}
-		p.add(Op{Kind: kind, SourceID: su.ID, TargetID: tu.ID, Key: email, Changes: changes, Attrs: desired})
+		p.add(Op{Kind: kind, SourceID: su.ID, TargetID: tu.ID, Key: email, Changes: changes, Attrs: desired, Reason: reason})
 	}
 	p.suspension(su, tu, link, linked, wantSuspended)
 }
@@ -850,6 +892,10 @@ func (p *planner) members(sg *model.SourceGroup, tg *model.TargetGroup) {
 		var srcID string
 		var kind model.Kind
 		if l, ok := p.userLinkByTgt[m.ID]; ok && m.ID != "" {
+			if p.frozen[l.SourceID] {
+				// A user left untouched by a plan error keeps its groups.
+				continue
+			}
 			managedObj, srcID, kind = true, l.SourceID, model.KindUser
 		} else if l, ok := p.groupLinkByTgt[m.ID]; ok && m.ID != "" {
 			managedObj, srcID, kind = true, l.SourceID, model.KindGroup
