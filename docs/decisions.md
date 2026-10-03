@@ -141,9 +141,83 @@ The P5 rule was not to edit `ad`. These were done inside conductor-sync
 
 | Need | Where now | Proposed `ad` API |
 |---|---|---|
-| Normalized DN key for map lookups (case, escaping, multi-valued RDN order) | `adsource.DNKey` | `escape.NormalizeDN(dn) string` (EqualDN exists, but maps need a key) |
+| ~~Normalized DN key for map lookups~~ | upstreamed in P5b: `escape.NormalizeDN` (`adsource.DNKey` wraps it) | done |
 | Typed user plus extra attributes in one search | `adsource` (Search + `UserFromEntry` + raw entry) | `Conn.UsersWithAttributes(ctx, base, filter, extra []string) iter.Seq2[UserEntry, error]` |
 | Bulk member read of many groups (one ranged read per group today) | `adsource` loop over `GroupMembers` | `Conn.GroupMembersMany` or a member DN -> GUID resolver |
 | Logon rename (sAMAccountName + userPrincipalName); `UpdateUser` covers profile attributes only | raw go-ldap modify in `internal/labtest` | `ad.RenameLogon(dn, sam, upn)` with preview and the old-value assertion |
 | Incremental change tracking (uSNChanged high-water mark or DirSync control) | not implemented (full reads) | `Conn.ChangesSince(ctx, base, usn)` |
 | Exclusion of critical system objects | filter in `adsource` | a reusable `escape` constant / `Users` option |
+
+## P5b: group-based scope and the management API (2026-10-03)
+
+Implementation agent; to be reviewed by the owner.
+
+28. **Groups decide the scope.** `source.include_groups` (any of them,
+    nested membership) and `source.exclude_groups` (exclusion wins);
+    `require_group` stays as a one-item alias. Membership is read per
+    referenced group with one `LDAP_MATCHING_RULE_IN_CHAIN` search below the
+    user bases (objectGUID only), then decided in Go, so the same sets serve
+    scope and placement. Primary-group membership (Domain Users) is not a
+    `member` value and does not count.
+29. **Every referenced group must resolve.** A group referenced by DN that
+    was renamed or deleted, or a SID that no longer exists, stops the read
+    ("referenced groups not found"): a missing include group must never look
+    like "everybody left" (mass suspension), nor a missing exclude group
+    like "everybody joined". The scheduled run fails and alerts instead. The
+    web UI stores groups by SID, which survives renames and moves.
+30. **Placement order**: group rules by explicit priority (1 first; a group
+    rule without a priority is a configuration error), then the most specific
+    container rule, then `default_org_unit`. Two matching group rules of the
+    same best priority with **different** targets are a plan error for that
+    user (`org-unit-ambiguous`): the user is left untouched (no create,
+    update, suspension or membership removal) until fixed. Two rules of the
+    same priority with the same target are not ambiguous and are accepted
+    (the spec said "a plan error, never a silent pick"; no pick happens when
+    both answers agree). One group may have only one rule.
+31. **Plan display fields** (resolved groups with names and member counts,
+    users left out by include/exclude groups, skipped objects, placement
+    reasons) are stored with the plan but are not part of the digest; the
+    digest still covers exactly the operations. An org unit change carries
+    the rule that chose it in the operation's reason, which is part of the
+    digest (a plan reviewed under one rule is not applied under another).
+32. **Management API = `conductor-sync serve`** on a Unix socket, JSON lines,
+    one request per connection, typed and allowlisted operations (package
+    `syncapi`, the only package conductor imports). Peers are checked with
+    SO_PEERCRED (default: the conductor user only); under systemd the socket
+    comes from `conductor-sync-api.socket` (owner conductor-sync, group
+    conductor, 0660) and the service runs with `PrivateUsers=no` (a private
+    user namespace would show every peer as "nobody"). Plans and applies are
+    background jobs, one at a time; the run lock still excludes the timer and
+    the CLI. Timer-driven runs do not need the API.
+33. **Sync settings versus host settings.** Settings an administrator edits
+    in the UI (mode, scope, mapping, policy, limits, `google.customer`,
+    `admin_subject`, `member_role`, `schedule.interval`) are stored as
+    versions in SQLite (who, when, comment, changed paths) and the newest one
+    overrides the file; the file is the bootstrap and `config export` renders
+    the effective configuration in the same format (`config import` makes the
+    file's settings the newest version again). Host settings (state and
+    credentials, how AD and Google are reached, `api_base_url`/`token_url`,
+    the ownership marker, alerts, `[api]`) stay file-only: they decide where
+    data and credentials go, and a web session must not be able to redirect
+    them. Updates carry the base version (optimistic concurrency).
+34. **The Google key at rest.** `key.set` (API) and `key set FILE` (CLI)
+    store the service account JSON key in SQLite encrypted with AES-256-GCM
+    (key from the `state-key` systemd credential, 32 bytes; the secret's name
+    is the additional data). It is never returned: only its client e-mail
+    and key ID are shown and audited. `google.key_credential` (a file) still
+    works and is used when no key is stored. The units load `state-key`
+    instead of `google-sa`.
+35. **Manual applies through the API are bound to a reviewed plan**: run ID
+    and digest; conductor-sync re-plans and applies only if the fresh plan
+    has that digest. conductor additionally asks for a typed confirmation
+    that contains the first 8 characters of the digest (`apply 1a2b3c4d`, or
+    `override 1a2b3c4d` beyond the limits) and a fresh second factor. "Run
+    now" is a scheduled-style run (binding limits, first apply must have been
+    manual).
+36. **In-process scheduler** (`schedule.in_process`) for hosts without
+    systemd timers (the Docker test environment); with the timer the status
+    estimates the next run as the last scheduled run plus the interval.
+37. **Upstreamed to `ad`**: `escape.NormalizeDN` (was `adsource.DNKey`).
+
+The remaining helpers listed above are still local; the group-scope work
+needed none of them.

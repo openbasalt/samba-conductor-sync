@@ -12,9 +12,11 @@ phase spec: `../planning/docs/p5-spec.md`.
 - Reads users and groups from AD with a **read-only service account**
   (the `ad` library: LDAPS with the domain CA pinned, Kerberos or simple
   bind, paged searches, ranged retrieval of large groups), below the
-  configured OUs and optionally only members of one group.
+  configured OUs, optionally only members of include groups and never
+  members of exclude groups (nested membership, groups by DN or SID).
 - Maps them to the target: address templates with fallbacks and an allowed
-  domain list, names, optional attributes, AD OU to Google org unit.
+  domain list, names, optional attributes, Google org unit by AD group (with
+  priorities) or by AD OU.
 - Computes a **plan** against the target's current state and the recorded
   links (AD objectGUID to target ID): create, update, rename, suspend,
   unsuspend, group create/update, add/remove member. Shows it, records it,
@@ -33,7 +35,8 @@ phase spec: `../planning/docs/p5-spec.md`.
 | Only what it owns | accounts carry an ownership marker (`externalIds`, customType `conductor-sync`); an existing account with the same address is reported and left alone unless `adopt = "email"`; administrators are never suspended or renamed; a suspension made by someone else is never undone; members the sync does not manage stay in synced groups |
 | Idempotent, resumable | every operation is journaled before and after it is sent; a crashed run is detected by the next one, and the fresh plan resolves the unknown outcomes (marker, in-flight creates). Re-running is always safe |
 | Audit | every run, operation, blocked plan and deletion goes to a hash-chained audit log (`audit verify`) |
-| Secrets | AD password and Google key are systemd credentials (or 0600 files); never logged, never in the database. Initial Google passwords are random, never stored, and must be changed at first sign-in (or SSO, below) |
+| Secrets | the AD password is a systemd credential (or 0600 file); the Google key is stored encrypted (AES-256-GCM, key from the `state-key` credential) or kept as a credential file; never logged, never returned by the API. Initial Google passwords are random, never stored, and must be changed at first sign-in (or SSO, below) |
+| Management API | `conductor-sync serve` on a Unix socket for conductor only (SO_PEERCRED), typed operations, every change audited with the acting AD user; applies bound to a reviewed plan's digest |
 
 Passwords are **not** synchronized: Samba keeps only hashes that Google
 cannot accept. The intended sign-in is SSO through `conductor-idp`'s SAML
@@ -51,9 +54,13 @@ conductor-sync map [--kind user|group] [KEY]
 conductor-sync delete-user KEY [--confirm ADDRESS]
 conductor-sync audit verify|export
 conductor-sync check-config
+conductor-sync serve
+conductor-sync config export | import [FILE] | history
+conductor-sync key set FILE | show
 ```
 
-Operator guide: [`docs/usage-p5.md`](docs/usage-p5.md). Mapping reference:
+Operator guide: [`docs/usage-p5.md`](docs/usage-p5.md) (§13: the
+management API and conductor's sync section). Mapping reference:
 [`docs/mapping.md`](docs/mapping.md). Decisions:
 [`docs/decisions.md`](docs/decisions.md). Configuration example:
 [`conductor-sync.toml.example`](conductor-sync.toml.example). systemd:
@@ -63,14 +70,18 @@ Operator guide: [`docs/usage-p5.md`](docs/usage-p5.md). Mapping reference:
 
 | Package | What |
 |---|---|
-| `cmd/conductor-sync` | CLI |
+| `cmd/conductor-sync` | CLI, `serve` |
+| `syncapi` | the management API protocol and client (the only package conductor imports) |
+| `internal/api` | the management API server: socket, peer check, operations, background jobs, in-process scheduler |
+| `internal/app` | wiring shared by the CLI and the API: effective configuration, stored key, engines |
+| `internal/secretbox` | AES-256-GCM for secrets at rest (the Google key) |
 | `internal/engine` | plan and apply runs: limits, confirmation, journal, resume, delete |
 | `internal/plan` | the diff: operations, warnings, digest, safety limits |
 | `internal/model` | connector-agnostic users, groups, members |
 | `internal/source/adsource` | AD reader (scope, mapping, members) |
 | `internal/mapping` | templates, address validation, OU mapping |
 | `internal/connector` | connector interface; `google`: Directory API client (JWT bearer with domain-wide delegation, backoff, merges) |
-| `internal/store` | SQLite state: links, runs, plans, journal, audit chain, run lock |
+| `internal/store` | SQLite state: links, runs, plans, journal, audit chain, run lock, settings versions, encrypted secrets |
 | `internal/fakegoogle` | fake Directory API used by every test (no real Workspace is ever written) |
 | `internal/alert`, `internal/metrics` | webhook and log alerts; Prometheus textfile |
 | `tools/fakegws` | the fake as a loopback server, for lab runs of the real binary |
@@ -92,5 +103,7 @@ scripts under the prefix `conductor-synclab`, network `10.95.0.0/24`, domain
 ## Status
 
 P5 (2026-10-02): engine, Google connector, CLI, systemd units, tests (unit,
-fake API, Samba AD lab end to end). Not yet tested against a real Google
-Workspace (read-only check pending a test tenant).
+fake API, Samba AD lab end to end). P5b (2026-10-03): scope and org unit
+placement by AD group, the management API, and the "Google Workspace sync"
+section of conductor (`../conductor/docs/usage-p5b.md`). Not yet tested
+against a real Google Workspace (read-only check pending a test tenant).

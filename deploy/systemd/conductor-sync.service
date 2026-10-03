@@ -21,10 +21,14 @@ TimeoutStartSec=2h
 # Exit 3 (blocked by the limits) and 4 (partial) leave the unit failed, so
 # OnFailure= and "systemctl --failed" surface them; the timer still fires.
 
-# The AD bind password and the Google service account key, readable only
-# by this service. Names match password_credential / key_credential.
+# The AD bind password and the state key (decrypts the Google service
+# account key stored through the management API or `conductor-sync key
+# set`), readable only by this service. Names match password_credential and
+# api.state_key_credential.
 LoadCredential=ad-bind:/etc/conductor-sync/credentials/ad-bind
-LoadCredential=google-sa:/etc/conductor-sync/credentials/google-sa
+LoadCredential=state-key:/etc/conductor-sync/credentials/state-key
+# A key kept as a file instead (google.key_credential = "google-sa"):
+# LoadCredential=google-sa:/etc/conductor-sync/credentials/google-sa
 # Optional webhook HMAC key (webhook_secret_credential = "webhook"):
 # LoadCredential=webhook:/etc/conductor-sync/credentials/webhook
 

@@ -1,4 +1,4 @@
-# conductor-sync: operator guide (P5)
+# conductor-sync: operator guide (P5, P5b)
 
 From an empty host to scheduled provisioning AD -> Google Workspace. No
 secret appears in this document; replace `example.com` with your domains.
@@ -42,22 +42,37 @@ install -m 0644 domain-ca.pem /etc/conductor-sync/domain-ca.pem
 install -m 0640 -o root -g conductor-sync conductor-sync.toml.example /etc/conductor-sync/conductor-sync.toml
 ```
 
-Credentials (files 0600, owned by `conductor-sync`; the service gets them
+Credentials (files 0600, owned by `conductor-sync`; the services get them
 through `LoadCredential=`, manual runs read them from `credentials_dir`):
 
 ```sh
 install -m 0600 -o conductor-sync -g conductor-sync /dev/null /etc/conductor-sync/credentials/ad-bind
 # write the svc.sync password into it with an editor (not on a command line)
-install -m 0600 -o conductor-sync -g conductor-sync service-account-key.json /etc/conductor-sync/credentials/google-sa
+(umask 077; openssl rand -hex 32 >/etc/conductor-sync/credentials/state-key)
+chown conductor-sync:conductor-sync /etc/conductor-sync/credentials/state-key
+```
+
+The state key encrypts the Google service account key, which is set once,
+either in conductor (Google Workspace sync > Setup, §13) or here, then
+stored encrypted in the state database and never shown again:
+
+```sh
+sudo -u conductor-sync conductor-sync key set service-account-key.json
 shred -u service-account-key.json
 ```
+
+(A key kept as a credential file still works: `google.key_credential =
+"google-sa"` and `LoadCredential=google-sa:...` in the units; a stored key
+wins over it.)
 
 Edit `/etc/conductor-sync/conductor-sync.toml` (see the comments and
 [`mapping.md`](mapping.md)). Keep `mode = "dry-run"`.
 
 ```sh
-install -m 0644 deploy/systemd/conductor-sync.service deploy/systemd/conductor-sync.timer /etc/systemd/system/
+install -m 0644 deploy/systemd/conductor-sync.service deploy/systemd/conductor-sync.timer \
+  deploy/systemd/conductor-sync-api.service deploy/systemd/conductor-sync-api.socket /etc/systemd/system/
 systemctl daemon-reload
+systemctl enable --now conductor-sync-api.socket    # only with conductor's sync section (§13)
 ```
 
 Manual commands run as the service user:
@@ -198,3 +213,60 @@ lab tests and `scripts/lab-cli-e2e.sh` (the real binary against the lab AD
 and `tools/fakegws`). Measured 2026-10-02 against 2,512 AD users and 12
 groups (4,142 memberships, a 1,600-member group): source read 5.9 s,
 initial apply of 6,664 operations against the fake API 16 s.
+
+## 13. Managing the sync from conductor (P5b)
+
+conductor's "Google Workspace sync" section (administrators only) drives
+conductor-sync through its local management API, `conductor-sync serve`:
+
+- `conductor-sync-api.socket` creates `/run/conductor-sync/api.sock`
+  (owner conductor-sync, group conductor, 0660) and starts
+  `conductor-sync-api.service` on the first connection. Every connection's
+  peer is checked with SO_PEERCRED: only `api.allowed_users` (default
+  `conductor`) is served. No network listener exists.
+- In `/etc/conductor/conductor.toml`: `[sync] enabled = true` (socket
+  `/run/conductor-sync/api.sock`), then restart conductor.
+- What the API does: read and update the sync settings (validated, stored as
+  versions with who changed what), set the service account key (write only,
+  stored encrypted, only its e-mail and key ID are shown), test the AD and
+  Google connections, preview the e-mail templates and org unit rules
+  against real AD users, generate a plan, apply a reviewed plan by run ID and
+  digest, "run now" with the scheduled rules, status, history, blocked runs,
+  audit chain verification. Every change is in the audit log with the AD
+  user conductor acted for (`conductor:<user>@<ip>`).
+- conductor asks for a fresh second factor before every change, and for a
+  typed confirmation bound to the plan's digest before an apply
+  (`apply 1a2b3c4d`, or `override 1a2b3c4d` beyond the limits).
+- The timer keeps working without the API; the API is only the way the web
+  interface acts. Plans and applies started from the web run as background
+  jobs inside `serve`; the run lock keeps them and the timer apart.
+
+Settings edited in conductor are stored in the state database and override
+the configuration file's sync settings (mode, `[source]` scope keys,
+`[mapping]`, `[policy]`, `[limits]`, `google.customer`, `admin_subject`,
+`member_role`, `schedule.interval`). Host settings stay in the file. From
+the command line:
+
+| Command | Does |
+|---|---|
+| `cs config export` | the effective configuration as TOML (no secret) |
+| `cs config history` | the stored versions: who, when, how many changes |
+| `cs config import [FILE]` | make the sync settings of FILE (default: the configuration file) the newest version |
+| `cs key set FILE` / `cs key show` | store the service account key encrypted / show its e-mail and key ID |
+| `cs serve` | the management API (normally started by the socket unit) |
+| `cs check-config` | also says whether the sync settings come from the file or from a stored version |
+
+Hosts without systemd timers (containers) set `schedule.in_process = true`:
+`serve` then runs the scheduled applies itself every `schedule.interval`.
+
+Group scope and placement (`include_groups`, `exclude_groups`, group rules
+with priorities): see [`mapping.md`](mapping.md). Measured in the sync lab
+(2026-10-03): resolving four referenced groups and their nested members adds
+about one second to a 2,500-user read.
+
+Upgrading from P5: the service unit now loads `state-key` instead of
+`google-sa`. Either create the state key and `key set` the existing key file
+(then remove `google-sa` and its `LoadCredential=` line), or keep
+`google.key_credential = "google-sa"` and add its `LoadCredential=` line
+back to the units.
+

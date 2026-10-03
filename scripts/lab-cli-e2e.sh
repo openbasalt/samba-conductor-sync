@@ -32,7 +32,7 @@ cleanup() {
 trap cleanup EXIT
 
 "$BIN/fakegws" -dir "$W/fake" -addr "127.0.0.1:$PORT" -domains sync.example.com,groups.sync.example.com \
-  -org-units /Staff/Engineering,/Staff/Sales,/Special -page-size 200 2>"$W/fake.log" &
+  -org-units /Staff/Engineering,/Staff/Sales,/Special -page-size 200 -seed-admin 2>"$W/fake.log" &
 FAKE_PID=$!
 for _ in $(seq 1 50); do [ -s "$W/fake/admin.txt" ] && curl -sk -o /dev/null "$FAKE/_fake/state" && break; sleep 0.2; done
 install -m 0600 "$W/fake/sa-key.json" "$W/creds/google-sa"
@@ -96,7 +96,8 @@ expect() {
 }
 fake_json() { curl -sk "$FAKE/_fake/$1"; }
 fake_users() { fake_json state | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d["users"] or []))'; }
-fake_unique() { fake_json state | python3 -c 'import json,sys; d=json.load(sys.stdin); u=d["users"] or []; print(len({x["primaryEmail"] for x in u}), len(u))'; }
+# The fake's own administrator (the admin subject, -seed-admin) is not counted.
+fake_unique() { fake_json state | python3 -c 'import json,sys; d=json.load(sys.stdin); u=[x for x in d["users"] or [] if not x.get("isAdmin")]; print(len({x["primaryEmail"] for x in u}), len(u))'; }
 fake_writes() { fake_json writes | python3 -c 'import json,sys; print(len(json.load(sys.stdin) or []))'; }
 
 say "check-config"
@@ -182,5 +183,65 @@ w=json.load(sys.stdin) or []
 bad=[x for x in w if x["method"]=="DELETE" and "/members/" not in x["path"]]
 assert not bad, bad
 print("no deletions among", len(w), "writes")'
+
+say "management API (serve): key, settings, connection test, preview, plan, run now"
+openssl rand -hex 32 >"$W/creds/state-key"; chmod 0600 "$W/creds/state-key"
+cat >>"$W/sync.toml" <<EOF2
+
+[api]
+socket = "$W/api.sock"
+allowed_uids = [$(id -u)]
+EOF2
+expect 0 cs key set "$W/creds/google-sa"
+grep -q 'stored (encrypted)' "$W/out.txt" || fail "key set"
+expect 0 cs config history
+grep -q 'no stored version' "$W/out.txt" || fail "config history before any edit"
+"$BIN/conductor-sync" serve --config "$W/sync.toml" 2>"$W/serve.log" &
+SERVE_PID=$!
+for _ in $(seq 1 50); do [ -S "$W/api.sock" ] && break; sleep 0.1; done
+[ "$(stat -c %a "$W/api.sock")" = 660 ] || fail "socket mode"
+api() { python3 - "$W/api.sock" "$@" <<'PY'
+import json, socket, sys, uuid
+sock, op = sys.argv[1], sys.argv[2]
+params = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
+req = {"version": 1, "id": uuid.uuid4().hex[:16], "op": op, "params": params, "sent_at": "2026-10-03T00:00:00Z",
+       "actor": {"user": "lab.admin", "sid": "S-1-5-21-1-2-3-1104", "session": "cli-e2e", "ip": "127.0.0.1"}}
+s = socket.socket(socket.AF_UNIX); s.connect(sock)
+s.sendall((json.dumps(req) + "\n").encode())
+data = b""
+while not data.endswith(b"\n"):
+    chunk = s.recv(1 << 20)
+    if not chunk: break
+    data += chunk
+resp = json.loads(data)
+if not resp["ok"]:
+    print(json.dumps(resp["error"])); sys.exit(1)
+print(json.dumps(resp["result"]))
+PY
+}
+jq_() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
+api status | jq_ 'd["ready"] and d["key"]["source"] == "database"' | grep -q True || fail "status"
+SID="$(api mapping.preview '{"query":"user0001","limit":3}' | jq_ 'd["users"][0]["email"]')"
+[ "$SID" = "user0001@sync.example.com" ] || fail "preview: $SID"
+CFG="$(api config.get)"
+SETTINGS="$(echo "$CFG" | python3 -c 'import json,sys; s=json.load(sys.stdin)["settings"]; s["scope"]["include_groups"]=["CN=All Staff,OU=Groups,OU=Lab,DC=sync,DC=conductor,DC=test"]; print(json.dumps(s))')"
+api connection.test "{\"settings\": $SETTINGS}" >"$W/test.json"
+jq_ 'd["ad"]["ok"] and d["google"]["ok"] and d["groups"][0]["name"] == "All Staff"' <"$W/test.json" | grep -q True || { cat "$W/test.json"; fail "connection test"; }
+api config.update "{\"base_version\": 0, \"settings\": $SETTINGS, \"comment\": \"cli e2e\"}" | jq_ 'd["version"]' | grep -q '^1$' || fail "config.update"
+JOB="$(api plan.start | jq_ 'd["job"]["id"]')"
+for _ in $(seq 1 120); do
+  STATE="$(api job.get "{\"id\": \"$JOB\"}" | jq_ 'd["state"]+" "+str(d.get("run_id",0))')"
+  case "$STATE" in running*) sleep 0.5 ;; *) break ;; esac
+done
+case "$STATE" in done*) ;; *) fail "plan job: $STATE" ;; esac
+RUN="${STATE#done }"
+api run.get "{\"id\": $RUN, \"section\": \"create\", \"limit\": 5}" >"$W/run.json"
+jq_ 'd["groups"][0]["name"] == "All Staff" and d["groups"][0]["members"] >= 2400' <"$W/run.json" | grep -q True || fail "plan scope"
+api apply.start '{"scheduled": true}' | jq_ 'd["job"]["kind"]' | grep -q scheduled || fail "run now"
+expect 0 cs config history
+grep -q 'conductor:lab.admin@127.0.0.1' "$W/out.txt" || fail "config history actor"
+expect 0 cs audit verify
+kill "$SERVE_PID"; wait "$SERVE_PID" 2>/dev/null || true
+grep -q 'management API listening' "$W/serve.log" || fail "serve log"
 
 say "CLI end to end: OK"

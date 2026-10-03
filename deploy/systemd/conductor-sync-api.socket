@@ -1,0 +1,17 @@
+# The management API socket of conductor-sync (conductor's "Google
+# Workspace sync" section). systemd creates it owned by the conductor-sync
+# user and the conductor group, mode 0660; conductor-sync-api.service
+# additionally admits only the conductor user (SO_PEERCRED).
+[Unit]
+Description=conductor-sync management API socket
+
+[Socket]
+ListenStream=/run/conductor-sync/api.sock
+SocketUser=conductor-sync
+SocketGroup=conductor
+SocketMode=0660
+DirectoryMode=0755
+Accept=no
+
+[Install]
+WantedBy=sockets.target

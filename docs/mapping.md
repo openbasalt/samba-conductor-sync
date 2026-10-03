@@ -1,8 +1,11 @@
 # conductor-sync: mapping guide
 
-How AD objects become Google accounts and groups: the `[mapping]` section
-of `conductor-sync.toml`. Test every change with `conductor-sync plan`
-before applying; the plan lists every field that would change.
+How AD objects become Google accounts and groups: the `[mapping]` and
+`[source]` sections of `conductor-sync.toml`, or the same settings in
+conductor's "Google Workspace sync > Setup" (stored as versions by
+conductor-sync, see `usage-p5.md` §13). Test every change with a plan before
+applying; the plan lists every field that would change and the rule behind
+each org unit change.
 
 ## Templates
 
@@ -36,8 +39,8 @@ primary_email = ["{mail|lower}", "{sAMAccountName|ascii|lower}@example.com"]
 | `allowed_domains` | (required) | Domains the sync may create addresses in. An AD `mail` in another domain falls through to the next template |
 | `given_name` | `{givenName}`, `{displayName}`, `{sAMAccountName}` | Google requires both names (at most 60 characters; longer values are cut) |
 | `family_name` | `{sn}`, `{sAMAccountName}` | |
-| `default_org_unit` | `/` | For users outside every mapped OU |
-| `[[mapping.org_units]]` | none | `ad` (a container DN) -> `target` (org unit path). The most specific container holding the user wins. The org unit must exist in Google |
+| `default_org_unit` | `/` | For users no rule places |
+| `[[mapping.org_units]]` | none | Placement rules, by group or by container (next section). The org units must exist in Google |
 | `[mapping.attributes]` | none | Optional fields, one template each: `title`, `department`, `employee_id`, `phone_work`, `phone_mobile`. **Only listed fields are managed**; an empty AD value clears the Google value |
 
 How optional fields are written: `title` and `department` go to the
@@ -48,6 +51,53 @@ phone types are kept). The ownership marker is another `externalIds` entry
 (`type: custom`, `customType: <google.marker>`, value: the AD objectGUID);
 do not remove it by hand, or the account stops being recognized after a
 state loss.
+
+### Org unit placement
+
+Two kinds of `[[mapping.org_units]]` rules:
+
+- **group rules**: `group = "<DN or SID>"`, `target`, and an explicit
+  `priority` (an integer from 1; **1 is evaluated first**). Members of the
+  group, nested membership included, go to `target`;
+- **container rules**: `ad = "<container DN>"`, `target`; no priority, the
+  most specific container holding the user wins.
+
+Resolution, for each user:
+
+1. group rules, from priority 1 upwards: the first priority at which the
+   user matches any group rule decides;
+   - one matching rule, or several pointing at the same org unit: that org
+     unit;
+   - several pointing at **different** org units: a **plan error** for that
+     user (`org-unit-ambiguous`). The plan lists it and the user is left
+     untouched (not created, changed, suspended or removed from groups) until
+     the configuration or the memberships are fixed. The sync never picks one
+     silently;
+2. otherwise the most specific matching container rule;
+3. otherwise `default_org_unit`.
+
+A group may have one rule only. Groups referenced by SID survive renames and
+moves (conductor stores SIDs); a group referenced by DN that is renamed,
+moved or deleted stops the read with "referenced groups not found", so the
+run fails and alerts instead of moving everybody to another org unit. The
+plan shows the groups with their current names, and every org unit change
+says which rule caused it (`org unit from group Finance (priority 10)`).
+
+```toml
+[[mapping.org_units]]                   # managers first, wherever they are
+group = "S-1-5-21-1004336348-1177238915-682003330-1601"   # Managers
+target = "/Managers"
+priority = 1
+
+[[mapping.org_units]]
+group = "CN=Finance,OU=Groups,DC=corp,DC=example"
+target = "/Finance"
+priority = 10
+
+[[mapping.org_units]]                   # everybody else by OU
+ad = "OU=People,DC=corp,DC=example"
+target = "/Staff"
+```
 
 Address changes: when the rendered address of a user changes (logon name or
 `mail` changed in AD), the plan shows `user.rename`; Google keeps the old
@@ -65,17 +115,27 @@ and left alone unless `policy.adopt = "email"`.
 
 - `user_bases`: containers searched (subtree) for users;
 - `exclude_bases`: containers below them to leave out (service accounts);
-- `require_group`: optional group DN; only its members, including nested
-  membership, are in scope (a "Google users" group is a convenient switch);
+- `include_groups`: optional groups (DN or SID); only users that are members
+  of at least one of them, nested membership included, are in scope (a
+  "Google users" group is a convenient switch). `require_group` (one DN) is
+  the P5 form and still accepted;
+- `exclude_groups`: optional groups whose members are out of scope even
+  when included (exclusion wins), e.g. "Leavers" or "No Google";
+- primary-group membership (Domain Users) is not an AD `member` value and
+  does not count for these groups: use a regular group;
+- every referenced group must exist (see above);
 - critical system objects (Administrator, krbtgt, built-in groups) are
   never in scope;
 - disabled accounts are in scope but suspended (`policy.suspend_disabled`),
   and not created (`policy.create_disabled = false`); accounts past
   `accountExpires` count as disabled (`expired_as_disabled`).
 
-Leaving the scope, by any route, suspends the account. Narrowing the scope
-by mistake suspends many accounts at once: that is what `max_suspends`,
-`max_touched_percent` and `max_source_drop_percent` stop in scheduled runs.
+Leaving the scope, by any route (moved out of the bases, removed from the
+include groups, added to an exclude group), suspends the account. Narrowing
+the scope by mistake suspends many accounts at once: that is what
+`max_suspends`, `max_touched_percent` and `max_source_drop_percent` stop in
+scheduled runs. The plan shows how many users the include and exclude
+groups left out.
 
 ## Groups
 
