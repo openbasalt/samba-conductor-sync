@@ -107,5 +107,5 @@ scripts under the prefix `conductor-synclab`, network `10.95.0.0/24`, domain
 P5 (2026-10-02): engine, Google connector, CLI, systemd units, tests (unit,
 fake API, Samba AD lab end to end). P5b (2026-10-03): scope and org unit
 placement by AD group, the management API, and the "Google Workspace sync"
-section of conductor (`../conductor/docs/usage-p5b.md`). Not yet tested
+section of conductor (<https://github.com/openbasalt/samba-conductor/blob/main/docs/usage-p5b.md>). Not yet tested
 against a real Google Workspace (read-only check pending a test tenant).
