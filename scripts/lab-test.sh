@@ -15,11 +15,15 @@ WHAT="${1:-all}"
 REMOTE_ROOT='~/conductor-synclab'
 
 cd "$REPO"
-# The family workspace when there is one (local sibling modules), otherwise
-# the versions go.mod pins.
-if [ -f "$REPO/../go.work" ]; then GOWORK="$(cd "$REPO/.." && pwd)/go.work"; else GOWORK=off; fi
-export GOWORK CGO_ENABLED=0
 mkdir -p bin/lab
+# In the family directory: a Go workspace with the local ad
+# (planning/scripts/family-gowork.sh); otherwise the version go.mod pins.
+GOWORK=off
+if [ -x ../planning/scripts/family-gowork.sh ] && [ -f ../ad/go.mod ]; then
+  ../planning/scripts/family-gowork.sh -o bin/lab/go.work . ../ad
+  GOWORK="$REPO/bin/lab/go.work"
+fi
+export GOWORK CGO_ENABLED=0
 go build -trimpath -o bin/lab/conductor-sync ./cmd/conductor-sync
 go build -trimpath -o bin/lab/fakegws ./tools/fakegws
 go test -c -tags lab -o bin/lab/labtest.test ./internal/labtest
