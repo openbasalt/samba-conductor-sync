@@ -188,6 +188,13 @@ func (s *Server) Fail(f Fault) {
 	s.mu.Unlock()
 }
 
+// SetLatency changes the delay of every API request.
+func (s *Server) SetLatency(d time.Duration) {
+	s.mu.Lock()
+	s.Latency = d
+	s.mu.Unlock()
+}
+
 // ClearFaults drops queued faults.
 func (s *Server) ClearFaults() {
 	s.mu.Lock()
@@ -530,8 +537,11 @@ func (r *recorder) Write(b []byte) (int, error) { r.body = append(r.body, b...);
 func (r *recorder) WriteHeader(code int)        { r.status = code }
 
 func (s *Server) api(w http.ResponseWriter, r *http.Request) {
-	if s.Latency > 0 {
-		time.Sleep(s.Latency)
+	s.mu.Lock()
+	lat := s.Latency
+	s.mu.Unlock()
+	if lat > 0 {
+		time.Sleep(lat)
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/admin/directory/v1")
 	s.mu.Lock()

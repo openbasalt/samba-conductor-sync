@@ -16,6 +16,7 @@ CREATE TABLE links (
 	key               TEXT NOT NULL,
 	source_dn         TEXT NOT NULL DEFAULT '',
 	suspended_by_sync INTEGER NOT NULL DEFAULT 0,
+	suspended_at      TEXT NOT NULL DEFAULT '',   -- when the sync suspended it
 	created_at        TEXT NOT NULL,
 	updated_at        TEXT NOT NULL,
 	PRIMARY KEY (connector, kind, source_id)

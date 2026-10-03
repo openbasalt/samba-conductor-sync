@@ -796,8 +796,10 @@ func (e *Engine) PreviewDelete(ctx context.Context, key string, minSuspended tim
 	if err != nil {
 		return nil, fmt.Errorf("%w: cannot read the account: %v", ErrDeleteRefused, err)
 	}
-	p := &DeletePreview{TargetID: u.ID, Email: u.Attrs[model.FieldPrimaryEmail], SourceID: link.SourceID, SourceDN: link.SourceDN,
-		SuspendedFor: e.now().Sub(link.UpdatedAt)}
+	p := &DeletePreview{TargetID: u.ID, Email: u.Attrs[model.FieldPrimaryEmail], SourceID: link.SourceID, SourceDN: link.SourceDN}
+	if link.SuspendedBySync && !link.SuspendedAt.IsZero() {
+		p.SuspendedFor = e.now().Sub(link.SuspendedAt)
+	}
 	switch {
 	case u.Owner != link.SourceID:
 		return p, fmt.Errorf("%w: the account does not carry the sync's ownership marker for this source", ErrDeleteRefused)

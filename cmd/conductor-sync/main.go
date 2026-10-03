@@ -655,8 +655,12 @@ func deleteUser(ctx context.Context, cfg *config.Config, eng *engine.Engine, key
 	minSusp := time.Duration(cfg.Delete.MinSuspendedDays) * 24 * time.Hour
 	p, err := eng.PreviewDelete(ctx, key, minSusp)
 	if p != nil {
-		fmt.Fprintf(stdout, "Account: %s (target ID %s)\nAD object: %s %s\nSuspended by the sync for: %s\n",
-			p.Email, p.TargetID, p.SourceID, p.SourceDN, p.SuspendedFor.Round(time.Minute))
+		fmt.Fprintf(stdout, "Account: %s (target ID %s)\nAD object: %s %s\n", p.Email, p.TargetID, p.SourceID, p.SourceDN)
+		if p.SuspendedFor > 0 {
+			fmt.Fprintf(stdout, "Suspended by the sync for: %s\n", p.SuspendedFor.Round(time.Minute))
+		} else {
+			fmt.Fprintln(stdout, "Suspended by the sync: no")
+		}
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)

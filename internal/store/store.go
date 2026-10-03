@@ -193,13 +193,16 @@ type LinkRow struct {
 	plan.Link
 	Connector string
 	SourceDN  string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// SuspendedAt is when the sync suspended the target object (zero when
+	// it is not suspended by the sync).
+	SuspendedAt time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // Links returns every link of a connector.
 func (s *Store) Links(ctx context.Context, connector string) ([]LinkRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT connector, kind, source_id, target_id, key, source_dn, suspended_by_sync, created_at, updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT connector, kind, source_id, target_id, key, source_dn, suspended_by_sync, suspended_at, created_at, updated_at
 		FROM links WHERE connector = ? ORDER BY kind, key`, connector)
 	if err != nil {
 		return nil, err
@@ -208,13 +211,16 @@ func (s *Store) Links(ctx context.Context, connector string) ([]LinkRow, error) 
 	var out []LinkRow
 	for rows.Next() {
 		var l LinkRow
-		var kind, created, updated string
+		var kind, suspAt, created, updated string
 		var susp int
-		if err := rows.Scan(&l.Connector, &kind, &l.SourceID, &l.TargetID, &l.Key, &l.SourceDN, &susp, &created, &updated); err != nil {
+		if err := rows.Scan(&l.Connector, &kind, &l.SourceID, &l.TargetID, &l.Key, &l.SourceDN, &susp, &suspAt, &created, &updated); err != nil {
 			return nil, err
 		}
 		l.Kind = model.Kind(kind)
 		l.SuspendedBySync = susp != 0
+		if suspAt != "" {
+			l.SuspendedAt = parseTS(suspAt)
+		}
 		l.CreatedAt, l.UpdatedAt = parseTS(created), parseTS(updated)
 		out = append(out, l)
 	}
@@ -234,12 +240,19 @@ func (s *Store) PutLink(ctx context.Context, connector string, l plan.Link, sour
 		connector, string(l.Kind), l.TargetID, l.SourceID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO links(connector, kind, source_id, target_id, key, source_dn, suspended_by_sync, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	suspAt := ""
+	if l.SuspendedBySync {
+		suspAt = now
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO links(connector, kind, source_id, target_id, key, source_dn, suspended_by_sync, suspended_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(connector, kind, source_id) DO UPDATE SET target_id = excluded.target_id, key = excluded.key,
 			source_dn = CASE WHEN excluded.source_dn <> '' THEN excluded.source_dn ELSE links.source_dn END,
+			suspended_at = CASE WHEN excluded.suspended_by_sync = 0 THEN ''
+				WHEN links.suspended_by_sync = 1 AND links.target_id = excluded.target_id THEN links.suspended_at
+				ELSE excluded.suspended_at END,
 			suspended_by_sync = excluded.suspended_by_sync, updated_at = excluded.updated_at`,
-		connector, string(l.Kind), l.SourceID, l.TargetID, model.NormalizeEmail(l.Key), sourceDN, boolInt(l.SuspendedBySync), now, now); err != nil {
+		connector, string(l.Kind), l.SourceID, l.TargetID, model.NormalizeEmail(l.Key), sourceDN, boolInt(l.SuspendedBySync), suspAt, now, now); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -358,7 +371,10 @@ func (s *Store) MarkInterrupted(ctx context.Context, connector string) ([]int64,
 	}
 	_ = rows.Close()
 	for _, id := range ids {
-		if _, err := s.db.ExecContext(ctx, `UPDATE runs SET status = ?, finished_at = ?, error = 'process ended before the run finished' WHERE id = ?`,
+		// The journal tells how far it got.
+		if _, err := s.db.ExecContext(ctx, `UPDATE runs SET status = ?, finished_at = ?, error = 'process ended before the run finished',
+			ops_done = (SELECT COUNT(*) FROM ops WHERE run_id = runs.id AND status = 'done'),
+			ops_failed = (SELECT COUNT(*) FROM ops WHERE run_id = runs.id AND status = 'failed') WHERE id = ?`,
 			StatusInterrupted, ts(s.now()), id); err != nil {
 			return nil, err
 		}
@@ -506,6 +522,9 @@ func (s *Store) JournalOps(ctx context.Context, runID int64, ops []plan.Op) erro
 			runID, i, string(o.Kind), o.Key, o.SourceID, o.TargetID, OpPending, now); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET ops_total = ? WHERE id = ?`, len(ops), runID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
