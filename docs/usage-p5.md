@@ -33,6 +33,35 @@ administrator. (`conductor setup` will create it in a later phase.)
 
 ## 3. Install
 
+(Samba 4.19 DCs, Ubuntu 24.04: see the `ldap server require strong auth`
+note in conductor's install doc; Kerberos binds need it.)
+
+From the Debian package (recommended; Debian 13, Ubuntu 26.04, Ubuntu 24.04
+best effort). The project's APT repository is not published yet; until it
+is, install the `.deb` of a release directly (`apt install
+./conductor-sync_<version>_amd64.deb`, after checking it against the
+release's signed `SHA256SUMS`). Once it is published, add it as conductor's
+install doc shows (`/etc/apt/sources.list.d/samba-conductor.sources` with
+`Signed-By:`), then:
+
+```sh
+apt install conductor-sync
+install -m 0644 domain-ca.pem /etc/conductor-sync/domain-ca.pem
+```
+
+The package installs `/usr/bin/conductor-sync`, the four units in
+`/usr/lib/systemd/system`, the man page and the conffile
+`/etc/conductor-sync/conductor-sync.toml` (the example, `mode = "dry-run"`;
+upgrades keep your edits); it creates the `conductor-sync` user,
+`/etc/conductor-sync` (root:conductor-sync 0750) with `credentials/`
+(conductor-sync 0700) and `/var/lib/conductor-sync`. It does not enable or
+start anything. Continue with the credentials below and skip the unit
+installation line. Upgrades restart the management API when it is running;
+`apt purge conductor-sync` deletes `/etc/conductor-sync` (with the state
+key) and `/var/lib/conductor-sync`.
+
+From source:
+
 ```sh
 useradd --system --user-group --home-dir /var/lib/conductor-sync --no-create-home --shell /usr/sbin/nologin conductor-sync
 install -m 0755 conductor-sync /usr/local/bin/
@@ -69,6 +98,7 @@ Edit `/etc/conductor-sync/conductor-sync.toml` (see the comments and
 [`mapping.md`](mapping.md)). Keep `mode = "dry-run"`.
 
 ```sh
+# source install only:
 install -m 0644 deploy/systemd/conductor-sync.service deploy/systemd/conductor-sync.timer \
   deploy/systemd/conductor-sync-api.service deploy/systemd/conductor-sync-api.socket /etc/systemd/system/
 systemctl daemon-reload

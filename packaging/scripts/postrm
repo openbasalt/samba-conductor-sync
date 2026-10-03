@@ -1,0 +1,38 @@
+#!/bin/sh
+# postrm of conductor-sync. Purge deletes the configuration, the credentials
+# (state key: without it the stored Google key is lost), the state (links,
+# runs, audit log) and the bookkeeping.
+# The system user is kept: files it owns may exist elsewhere (backups,
+# copies), and a reused UID would own them.
+set -e
+
+ENABLE="conductor-sync.timer conductor-sync-api.socket"
+
+case "$1" in
+remove)
+	if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
+		systemctl --system daemon-reload >/dev/null || true
+	fi
+	if command -v deb-systemd-helper >/dev/null 2>&1; then
+		deb-systemd-helper mask $ENABLE >/dev/null || true
+	fi
+	;;
+purge)
+	if command -v deb-systemd-helper >/dev/null 2>&1; then
+		deb-systemd-helper purge $ENABLE >/dev/null || true
+		deb-systemd-helper unmask $ENABLE >/dev/null || true
+	fi
+	for path in /etc/conductor-sync/conductor-sync.toml /etc/conductor-sync; do
+		if dpkg-statoverride --list "$path" >/dev/null 2>&1; then
+			dpkg-statoverride --remove "$path"
+		fi
+	done
+	rm -rf /etc/systemd/system/conductor-sync.timer.d /etc/systemd/system/conductor-sync-api.socket.d /etc/systemd/system/conductor-sync-api.service.d /etc/systemd/system/conductor-sync.service.d
+	rm -rf /etc/conductor-sync /var/lib/conductor-sync
+	if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
+		systemctl --system daemon-reload >/dev/null || true
+	fi
+	;;
+esac
+
+exit 0

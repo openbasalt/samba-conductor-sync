@@ -1,0 +1,24 @@
+conductor-sync for Debian and Ubuntu
+====================================
+
+Installing the package creates the "conductor-sync" system user,
+/etc/conductor-sync (root:conductor-sync 0750) with credentials/
+(conductor-sync 0700), the conffile /etc/conductor-sync/conductor-sync.toml
+(mode = "dry-run") and /var/lib/conductor-sync. It does not enable or start
+anything.
+
+  1. A read-only AD account; its password in credentials/ad-bind and a state
+     key in credentials/state-key (both 0600, owned by conductor-sync).
+  2. The domain CA in /etc/conductor-sync/domain-ca.pem; edit
+     conductor-sync.toml.
+  3. With conductor's "Google Workspace sync" section:
+       sudo systemctl enable --now conductor-sync-api.socket
+     (the socket's group is "conductor": install conductor first).
+  4. Scheduled runs, after a first manual apply:
+       sudo systemctl enable --now conductor-sync.timer
+
+Upgrades restart the management API when it is running. "apt purge
+conductor-sync" deletes /etc/conductor-sync (including the state key) and
+/var/lib/conductor-sync (links, runs, audit log).
+
+Full guide: https://github.com/openbasalt/samba-conductor-sync/blob/main/docs/usage-p5.md

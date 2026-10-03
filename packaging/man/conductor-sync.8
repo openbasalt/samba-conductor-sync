@@ -1,0 +1,75 @@
+.TH CONDUCTOR-SYNC 8 "2026-10-03" "Samba Conductor" "System Administration"
+.SH NAME
+conductor-sync \- provisioning from Samba AD to Google Workspace
+.SH SYNOPSIS
+.B conductor-sync
+.I command
+.RI [ flags ]
+.SH DESCRIPTION
+.B conductor-sync
+reads users and groups from Samba Active Directory with a read-only account
+and provisions them to Google Workspace. Every run computes a plan;
+scheduled runs apply only plans inside the configured safety limits;
+nothing is deleted automatically. Manual commands run as the
+.B conductor-sync
+user, for example
+.BR "sudo \-u conductor-sync conductor-sync plan" .
+Each command accepts
+.BR \-h .
+.SH COMMANDS
+.TP
+.B plan
+Compute and record a plan (read-only on both sides).
+.TP
+.B apply
+Compute a fresh plan and apply it (confirmation, safety limits).
+.TP
+.B status
+Mode, last runs, links, unfinished operations, audit chain.
+.TP
+.B history
+Recent runs, or one run's plan and journal.
+.TP
+.B map
+The AD object to target object links.
+.TP
+.B delete-user
+Permanently delete one suspended, sync-owned account.
+.TP
+.B audit verify | audit export
+Check or export the hash-chained audit log.
+.TP
+.B check-config
+Validate the configuration and the credentials.
+.TP
+.B serve
+Run the local management API used by conductor's web interface (started by
+.BR conductor-sync-api.socket ).
+.TP
+.B config export | import | history
+The sync settings.
+.TP
+.B key set | key show
+The Google service account key (stored encrypted).
+.TP
+.B version
+Print the version.
+.SH EXIT STATUS
+0 done, 1 error, 2 usage, 3 blocked (safety limits, or before the first
+manual apply), 4 partial, 5 not applied (declined, plan changed, delete
+refused), 6 manual apply in dry-run mode.
+.SH FILES
+.TP
+.I /etc/conductor-sync/conductor-sync.toml
+Configuration.
+.TP
+.I /etc/conductor-sync/credentials/
+.B ad-bind
+and
+.BR state-key ,
+loaded by systemd.
+.TP
+.I /var/lib/conductor-sync/
+State database.
+.SH SEE ALSO
+.BR conductor (8)

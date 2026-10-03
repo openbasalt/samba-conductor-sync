@@ -1,0 +1,12 @@
+#!/bin/sh
+# prerm of conductor-sync: stop its units when the package is removed (not on
+# upgrade: postinst restarts the running ones with the new binaries).
+set -e
+
+UNITS="conductor-sync.timer conductor-sync-api.socket conductor-sync-api.service conductor-sync.service"
+
+if [ -z "${DPKG_ROOT:-}" ] && [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+	deb-systemd-invoke stop $UNITS >/dev/null || true
+fi
+
+exit 0

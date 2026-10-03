@@ -8,7 +8,7 @@ VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 FUZZTIME ?= 20s
 
-.PHONY: build test check fmt vet staticcheck vulncheck fuzz lab-test tools
+.PHONY: build test check fmt vet staticcheck vulncheck fuzz lab-test tools package lintian
 
 build:
 	mkdir -p bin
@@ -44,3 +44,13 @@ lab-test:
 tools:
 	@test -x $(STATICCHECK) || go install honnef.co/go/tools/cmd/staticcheck@latest
 	@test -x $(GOVULNCHECK) || go install golang.org/x/vuln/cmd/govulncheck@latest
+
+# Debian packages and their SBOMs in dist/ (amd64 and arm64 by default;
+# version from the git tag, VERSION= overrides). Layout and release process:
+# ../planning/docs/packaging.md.
+ARCHES ?= amd64 arm64
+package:
+	packaging/build.sh $(ARCHES)
+
+lintian:
+	packaging/lintian.sh dist/*.deb

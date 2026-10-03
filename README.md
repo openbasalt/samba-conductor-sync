@@ -93,6 +93,8 @@ make test        # unit and integration tests against the fake API (race detecto
 make check       # gofmt, vet, staticcheck, govulncheck, tests
 make fuzz        # template fuzzer
 make lab-test    # Samba AD lab on server-home + fake API (scripts/lab-test.sh)
+make package     # dist/: .deb for amd64 and arm64, SBOMs
+make lintian     # Debian 13's lintian on dist/*.deb
 ```
 
 The lab is conductor-sync's own (`scripts/synclab.sh`: the family lab

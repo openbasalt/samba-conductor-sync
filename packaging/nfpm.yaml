@@ -1,0 +1,84 @@
+# nfpm configuration of the "conductor-sync" package. Built by
+# packaging/build.sh, which sets ARCH, DEB_VERSION, DEB_REVISION, BUILD
+# (staging directory) and SOURCE_DATE_EPOCH (every timestamp). Paths are
+# relative to the repository root.
+name: conductor-sync
+arch: ${ARCH}
+platform: linux
+version: ${DEB_VERSION}
+version_schema: none
+release: ${DEB_REVISION}
+section: admin
+priority: optional
+maintainer: Samba Conductor maintainers <samba-conductor@openbasalt.org>
+vendor: OpenBasalt
+homepage: https://github.com/openbasalt/samba-conductor-sync
+license: MIT
+description: |-
+  provisioning from Samba AD to Google Workspace
+  conductor-sync reads users and groups from Samba Active Directory with a
+  read-only account and provisions them to Google Workspace: accounts,
+  groups, memberships and suspension. Every run computes a plan first;
+  scheduled runs apply only plans inside configured safety limits, nothing
+  is ever deleted automatically, and every operation is journaled and
+  audited. It is part of Samba Conductor; conductor's web interface can
+  drive it through a local management API.
+  .
+  Nothing is started at installation, and a new configuration stays in
+  dry-run (see /usr/share/doc/conductor-sync/README.Debian).
+
+depends:
+  - systemd | systemd-standalone-sysusers | systemd-sysusers
+suggests:
+  - conductor
+
+contents:
+  - expand: true
+    src: ${BUILD}/bin/conductor-sync
+    dst: /usr/bin/conductor-sync
+    file_info: {mode: 0755}
+  - expand: true
+    src: ${BUILD}/systemd/conductor-sync.service
+    dst: /usr/lib/systemd/system/conductor-sync.service
+    file_info: {mode: 0644}
+  - expand: true
+    src: ${BUILD}/systemd/conductor-sync.timer
+    dst: /usr/lib/systemd/system/conductor-sync.timer
+    file_info: {mode: 0644}
+  - expand: true
+    src: ${BUILD}/systemd/conductor-sync-api.service
+    dst: /usr/lib/systemd/system/conductor-sync-api.service
+    file_info: {mode: 0644}
+  - expand: true
+    src: ${BUILD}/systemd/conductor-sync-api.socket
+    dst: /usr/lib/systemd/system/conductor-sync-api.socket
+    file_info: {mode: 0644}
+  - src: packaging/sysusers.conf
+    dst: /usr/lib/sysusers.d/conductor-sync.conf
+    file_info: {mode: 0644}
+  - src: conductor-sync.toml.example
+    dst: /etc/conductor-sync/conductor-sync.toml
+    type: config|noreplace
+    file_info: {mode: 0644}
+  - expand: true
+    src: ${BUILD}/man/conductor-sync.8.gz
+    dst: /usr/share/man/man8/conductor-sync.8.gz
+    file_info: {mode: 0644}
+  - src: packaging/copyright
+    dst: /usr/share/doc/conductor-sync/copyright
+    file_info: {mode: 0644}
+  - expand: true
+    src: ${BUILD}/doc/conductor-sync/changelog.Debian.gz
+    dst: /usr/share/doc/conductor-sync/changelog.Debian.gz
+    file_info: {mode: 0644}
+  - src: packaging/README.Debian
+    dst: /usr/share/doc/conductor-sync/README.Debian
+    file_info: {mode: 0644}
+  - src: packaging/lintian-overrides
+    dst: /usr/share/lintian/overrides/conductor-sync
+    file_info: {mode: 0644}
+
+scripts:
+  postinstall: packaging/scripts/postinst
+  preremove: packaging/scripts/prerm
+  postremove: packaging/scripts/postrm
