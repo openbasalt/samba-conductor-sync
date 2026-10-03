@@ -5,7 +5,7 @@ package source
 import (
 	"context"
 
-	"github.com/samba-conductor/conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
 )
 
 // Skipped is a source object that could not be mapped (no address, a

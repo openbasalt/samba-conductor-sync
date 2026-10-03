@@ -45,7 +45,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/internal/fakegoogle"
+	"github.com/openbasalt/samba-conductor-sync/internal/fakegoogle"
 )
 
 func main() {

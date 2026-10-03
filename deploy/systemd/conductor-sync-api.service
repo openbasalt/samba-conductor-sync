@@ -5,7 +5,7 @@
 # acts for. Scheduled runs stay with conductor-sync.timer.
 [Unit]
 Description=Samba Conductor provisioning: management API for conductor
-Documentation=https://github.com/samba-conductor/conductor-sync
+Documentation=https://github.com/openbasalt/samba-conductor-sync
 Requires=conductor-sync-api.socket
 After=network-online.target conductor-sync-api.socket
 Wants=network-online.target

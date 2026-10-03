@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/samba-conductor/conductor-sync/internal/alert"
-	"github.com/samba-conductor/conductor-sync/internal/connector/google"
-	"github.com/samba-conductor/conductor-sync/internal/mapping"
-	"github.com/samba-conductor/conductor-sync/internal/plan"
-	"github.com/samba-conductor/conductor-sync/internal/source/adsource"
+	"github.com/openbasalt/samba-conductor-sync/internal/alert"
+	"github.com/openbasalt/samba-conductor-sync/internal/connector/google"
+	"github.com/openbasalt/samba-conductor-sync/internal/mapping"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
+	"github.com/openbasalt/samba-conductor-sync/internal/source/adsource"
 )
 
 // Policy is the [policy] section.

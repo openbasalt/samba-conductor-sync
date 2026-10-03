@@ -10,8 +10,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/samba-conductor/conductor-sync/internal/model"
-	"github.com/samba-conductor/conductor-sync/internal/plan"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
 )
 
 // Errors a connector maps its failures to (wrapped with detail).

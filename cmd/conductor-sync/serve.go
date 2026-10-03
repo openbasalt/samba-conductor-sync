@@ -10,10 +10,10 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/samba-conductor/conductor-sync/internal/api"
-	"github.com/samba-conductor/conductor-sync/internal/app"
-	"github.com/samba-conductor/conductor-sync/internal/config"
-	"github.com/samba-conductor/conductor-sync/internal/store"
+	"github.com/openbasalt/samba-conductor-sync/internal/api"
+	"github.com/openbasalt/samba-conductor-sync/internal/app"
+	"github.com/openbasalt/samba-conductor-sync/internal/config"
+	"github.com/openbasalt/samba-conductor-sync/internal/store"
 )
 
 // serve runs the management API (and the in-process scheduler when

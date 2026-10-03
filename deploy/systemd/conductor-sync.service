@@ -6,7 +6,7 @@
 #   sudo -u conductor-sync conductor-sync plan
 [Unit]
 Description=Samba Conductor provisioning AD -> Google Workspace
-Documentation=https://github.com/samba-conductor/conductor-sync
+Documentation=https://github.com/openbasalt/samba-conductor-sync
 After=network-online.target
 Wants=network-online.target
 # Chain any notifier on failure (blocked, partial or failed runs exit non-zero):

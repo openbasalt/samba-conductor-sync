@@ -22,12 +22,12 @@ import (
 	"time"
 
 	"github.com/go-ldap/ldap/v3"
-	"github.com/samba-conductor/ad"
-	"github.com/samba-conductor/ad/escape"
-	"github.com/samba-conductor/ad/sid"
-	"github.com/samba-conductor/conductor-sync/internal/mapping"
-	"github.com/samba-conductor/conductor-sync/internal/model"
-	"github.com/samba-conductor/conductor-sync/internal/source"
+	ad "github.com/openbasalt/samba-conductor-ad"
+	"github.com/openbasalt/samba-conductor-ad/escape"
+	"github.com/openbasalt/samba-conductor-ad/sid"
+	"github.com/openbasalt/samba-conductor-sync/internal/mapping"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/source"
 )
 
 // Config is the [source] section of the configuration.

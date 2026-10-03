@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/syncapi"
+	"github.com/openbasalt/samba-conductor-sync/syncapi"
 )
 
 // maxJobs bounds the finished jobs kept in memory.

@@ -16,7 +16,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/samba-conductor/ad/escape"
+	"github.com/openbasalt/samba-conductor-ad/escape"
 )
 
 // Template is a parsed template.

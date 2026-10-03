@@ -1,15 +1,15 @@
-module github.com/samba-conductor/conductor-sync
+module github.com/openbasalt/samba-conductor-sync
 
 go 1.27.0
 
-// The ad library is local only until the family's GitHub home is decided
-// (planning/docs/decisions.md); the family go.work resolves it too.
-replace github.com/samba-conductor/ad => ../ad
+// Sibling modules of the Samba Conductor family are pinned by commit
+// (pseudo-versions until they are tagged). A go.work in the family
+// directory overrides the pins for local development (CONTRIBUTING.md).
 
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/go-ldap/ldap/v3 v3.4.14
-	github.com/samba-conductor/ad v0.0.0
+	github.com/openbasalt/samba-conductor-ad v0.0.0-20261003121404-baa3a887013c
 	modernc.org/sqlite v1.60.1
 )
 

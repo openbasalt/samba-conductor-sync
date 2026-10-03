@@ -1,6 +1,9 @@
-# Quality gates and builds for conductor-sync. GOWORK=off: the module is
-# checked on its own (go.mod points at ../ad with a replace directive).
-export GOWORK := off
+# Quality gates and builds for conductor-sync.
+# GOWORK=off by default: the module is checked on its own, against the
+# versions go.mod pins (what CI and release builds use), not through a
+# family go.work; `make check GOWORK=$PWD/../go.work` checks it against
+# local copies of the sibling modules instead.
+export GOWORK ?= off
 GOBIN := $(shell go env GOPATH)/bin
 STATICCHECK := $(GOBIN)/staticcheck
 GOVULNCHECK := $(GOBIN)/govulncheck
@@ -36,7 +39,7 @@ vulncheck: tools
 fuzz:
 	go test -run XXX -fuzz FuzzTemplate -fuzztime $(FUZZTIME) ./internal/mapping/
 
-# Integration tests on server-home: Samba AD in the sync lab + the fake
+# Integration tests on the lab host: Samba AD in the sync lab + the fake
 # Directory API (scripts/lab-test.sh; the lab: scripts/synclab.sh).
 lab-test:
 	./scripts/lab-test.sh

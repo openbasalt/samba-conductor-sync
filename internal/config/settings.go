@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/samba-conductor/conductor-sync/internal/mapping"
-	"github.com/samba-conductor/conductor-sync/internal/plan"
-	"github.com/samba-conductor/conductor-sync/syncapi"
+	"github.com/openbasalt/samba-conductor-sync/internal/mapping"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
+	"github.com/openbasalt/samba-conductor-sync/syncapi"
 )
 
 // The configuration has two parts. Host settings (state directory,

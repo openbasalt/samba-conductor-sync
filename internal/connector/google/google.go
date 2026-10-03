@@ -25,9 +25,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/internal/connector"
-	"github.com/samba-conductor/conductor-sync/internal/model"
-	"github.com/samba-conductor/conductor-sync/internal/plan"
+	"github.com/openbasalt/samba-conductor-sync/internal/connector"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
 )
 
 // Config is the [google] section of the configuration.

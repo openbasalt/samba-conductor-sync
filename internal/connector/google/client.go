@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/internal/connector"
+	"github.com/openbasalt/samba-conductor-sync/internal/connector"
 )
 
 // apiError is a Directory API error response.

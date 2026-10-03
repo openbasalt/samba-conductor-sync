@@ -25,7 +25,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samba-conductor/conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
 )
 
 // OpKind is the type of one planned operation.

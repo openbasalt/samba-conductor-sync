@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/internal/connector"
-	"github.com/samba-conductor/conductor-sync/internal/connector/google"
-	"github.com/samba-conductor/conductor-sync/internal/fakegoogle"
-	"github.com/samba-conductor/conductor-sync/internal/model"
-	"github.com/samba-conductor/conductor-sync/internal/plan"
+	"github.com/openbasalt/samba-conductor-sync/internal/connector"
+	"github.com/openbasalt/samba-conductor-sync/internal/connector/google"
+	"github.com/openbasalt/samba-conductor-sync/internal/fakegoogle"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
 )
 
 type sleeps struct {

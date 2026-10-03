@@ -23,8 +23,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/internal/model"
-	"github.com/samba-conductor/conductor-sync/internal/plan"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
 	_ "modernc.org/sqlite" // database/sql driver "sqlite"
 )
 

@@ -15,17 +15,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/internal/app"
-	"github.com/samba-conductor/conductor-sync/internal/config"
-	"github.com/samba-conductor/conductor-sync/internal/connector"
-	"github.com/samba-conductor/conductor-sync/internal/connector/google"
-	"github.com/samba-conductor/conductor-sync/internal/fakegoogle"
-	"github.com/samba-conductor/conductor-sync/internal/model"
-	"github.com/samba-conductor/conductor-sync/internal/secret"
-	"github.com/samba-conductor/conductor-sync/internal/source"
-	"github.com/samba-conductor/conductor-sync/internal/source/adsource"
-	"github.com/samba-conductor/conductor-sync/internal/store"
-	"github.com/samba-conductor/conductor-sync/syncapi"
+	"github.com/openbasalt/samba-conductor-sync/internal/app"
+	"github.com/openbasalt/samba-conductor-sync/internal/config"
+	"github.com/openbasalt/samba-conductor-sync/internal/connector"
+	"github.com/openbasalt/samba-conductor-sync/internal/connector/google"
+	"github.com/openbasalt/samba-conductor-sync/internal/fakegoogle"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/secret"
+	"github.com/openbasalt/samba-conductor-sync/internal/source"
+	"github.com/openbasalt/samba-conductor-sync/internal/source/adsource"
+	"github.com/openbasalt/samba-conductor-sync/internal/store"
+	"github.com/openbasalt/samba-conductor-sync/syncapi"
 )
 
 // fakeSource is the AD side: a mutable result plus canned check/preview.

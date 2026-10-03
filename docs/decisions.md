@@ -127,7 +127,7 @@ and P4 edit the planning repository in parallel.
 26. **Own lab**: `scripts/synclab.sh` runs the family lab scripts patched
     to the prefix `conductor-synclab`, bridge `cndsync0`, `10.95.0.0/24`,
     domain `sync.conductor.test`, one DC, state in `~/conductor-synclab`
-    on server-home. The patches are verified (the script fails if a
+    on the lab host. The patches are verified (the script fails if a
     second-DC step survives). The shared `conductor-lab-*` VMs are never
     used.
 27. **govulncheck** reports GO-2026-5932 (`golang.org/x/crypto/openpgp`,

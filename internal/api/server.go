@@ -34,9 +34,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/internal/app"
-	"github.com/samba-conductor/conductor-sync/internal/config"
-	"github.com/samba-conductor/conductor-sync/syncapi"
+	"github.com/openbasalt/samba-conductor-sync/internal/app"
+	"github.com/openbasalt/samba-conductor-sync/internal/config"
+	"github.com/openbasalt/samba-conductor-sync/syncapi"
 )
 
 // Server is a running management API.

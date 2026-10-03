@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/go-ldap/ldap/v3"
-	"github.com/samba-conductor/conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
 )
 
 func TestDNKey(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samba-conductor/conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
 )
 
 func TestTemplate(t *testing.T) {

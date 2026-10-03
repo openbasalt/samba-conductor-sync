@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end run of the real conductor-sync binary on server-home: the sync
+# End-to-end run of the real conductor-sync binary on the lab host: the sync
 # lab's Samba AD as source, fakegws (the fake Directory API) as target.
 # Covers dry-run, the first-manual-apply rule, the limits, a plan pinned by
 # run ID, the run lock, a kill -9 in the middle of the initial apply and the

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samba-conductor/conductor-sync/internal/model"
-	"github.com/samba-conductor/conductor-sync/internal/plan"
-	"github.com/samba-conductor/conductor-sync/syncapi"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
+	"github.com/openbasalt/samba-conductor-sync/syncapi"
 )
 
 func TestExampleLoads(t *testing.T) {

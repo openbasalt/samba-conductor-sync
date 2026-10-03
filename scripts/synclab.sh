@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# conductor-sync's own AD lab on server-home: the family lab scripts
+# conductor-sync's own AD lab on the lab host: the family lab scripts
 # (planning/lab) run under a different prefix, network and domain, so the
 # shared conductor-lab-* VMs are never touched.
 #
@@ -7,7 +7,7 @@
 #   network         conductor-synclab (NAT, bridge cndsync0, 10.95.0.0/24)
 #   state           ~/conductor-synclab/state (secrets 0600, SSH key, CA)
 #
-# Run ON server-home from a copy of the family tree that holds planning/lab:
+# Run ON the lab host from a copy of the family tree that holds planning/lab:
 #
 #   scripts/synclab.sh up        # create + provision + seed + snapshot
 #   scripts/synclab.sh reset     # back to the "seeded" snapshot

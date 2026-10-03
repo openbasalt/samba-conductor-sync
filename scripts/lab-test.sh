@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Run conductor-sync's lab tests on server-home (its own sync lab, see
+# Run conductor-sync's lab tests on the lab host (its own sync lab, see
 # synclab.sh) from the laptop: build here, copy the binaries over, reset
 # the lab domain to its "seeded" snapshot, run the Go lab tests and the CLI
-# end-to-end script, reset again. Secrets stay on server-home.
+# end-to-end script, reset again. Secrets stay on the lab host.
 #
 #   scripts/lab-test.sh            # Go lab tests + CLI end to end
 #   scripts/lab-test.sh go|cli     # only one of them
@@ -15,7 +15,10 @@ WHAT="${1:-all}"
 REMOTE_ROOT='~/conductor-synclab'
 
 cd "$REPO"
-export GOWORK=off CGO_ENABLED=0
+# The family workspace when there is one (local sibling modules), otherwise
+# the versions go.mod pins.
+if [ -f "$REPO/../go.work" ]; then GOWORK="$(cd "$REPO/.." && pwd)/go.work"; else GOWORK=off; fi
+export GOWORK CGO_ENABLED=0
 mkdir -p bin/lab
 go build -trimpath -o bin/lab/conductor-sync ./cmd/conductor-sync
 go build -trimpath -o bin/lab/fakegws ./tools/fakegws

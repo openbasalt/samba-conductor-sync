@@ -36,13 +36,13 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/internal/app"
-	"github.com/samba-conductor/conductor-sync/internal/config"
-	"github.com/samba-conductor/conductor-sync/internal/engine"
-	"github.com/samba-conductor/conductor-sync/internal/model"
-	"github.com/samba-conductor/conductor-sync/internal/plan"
-	"github.com/samba-conductor/conductor-sync/internal/secret"
-	"github.com/samba-conductor/conductor-sync/internal/store"
+	"github.com/openbasalt/samba-conductor-sync/internal/app"
+	"github.com/openbasalt/samba-conductor-sync/internal/config"
+	"github.com/openbasalt/samba-conductor-sync/internal/engine"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
+	"github.com/openbasalt/samba-conductor-sync/internal/secret"
+	"github.com/openbasalt/samba-conductor-sync/internal/store"
 )
 
 var version = "dev"

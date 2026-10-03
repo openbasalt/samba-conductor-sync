@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/internal/connector"
+	"github.com/openbasalt/samba-conductor-sync/internal/connector"
 )
 
 // Directory API scopes. Planning reads with the read-only scopes; only

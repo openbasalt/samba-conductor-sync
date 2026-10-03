@@ -8,9 +8,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-ldap/ldap/v3"
-	"github.com/samba-conductor/ad/escape"
-	"github.com/samba-conductor/ad/sid"
-	"github.com/samba-conductor/conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-ad/escape"
+	"github.com/openbasalt/samba-conductor-ad/sid"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
 )
 
 // Config is the [mapping] section of the configuration.

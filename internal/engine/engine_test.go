@@ -12,15 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samba-conductor/conductor-sync/internal/alert"
-	"github.com/samba-conductor/conductor-sync/internal/connector"
-	"github.com/samba-conductor/conductor-sync/internal/connector/google"
-	"github.com/samba-conductor/conductor-sync/internal/engine"
-	"github.com/samba-conductor/conductor-sync/internal/fakegoogle"
-	"github.com/samba-conductor/conductor-sync/internal/model"
-	"github.com/samba-conductor/conductor-sync/internal/plan"
-	"github.com/samba-conductor/conductor-sync/internal/source"
-	"github.com/samba-conductor/conductor-sync/internal/store"
+	"github.com/openbasalt/samba-conductor-sync/internal/alert"
+	"github.com/openbasalt/samba-conductor-sync/internal/connector"
+	"github.com/openbasalt/samba-conductor-sync/internal/connector/google"
+	"github.com/openbasalt/samba-conductor-sync/internal/engine"
+	"github.com/openbasalt/samba-conductor-sync/internal/fakegoogle"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
+	"github.com/openbasalt/samba-conductor-sync/internal/source"
+	"github.com/openbasalt/samba-conductor-sync/internal/store"
 )
 
 // env is one engine wired to a fake Directory API over TLS.

@@ -236,7 +236,7 @@ when done. Google keeps deleted users restorable for about 20 days.
 
 ## 12. Lab (development)
 
-`scripts/synclab.sh` builds conductor-sync's own Samba lab on server-home
+`scripts/synclab.sh` builds conductor-sync's own Samba lab on the lab host
 (one DC, `sync.conductor.test`, 10.95.0.0/24, prefix `conductor-synclab`,
 state in `~/conductor-synclab/state`), `scripts/lab-test.sh` runs the Go
 lab tests and `scripts/lab-cli-e2e.sh` (the real binary against the lab AD

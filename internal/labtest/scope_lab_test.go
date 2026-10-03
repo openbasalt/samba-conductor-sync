@@ -8,14 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samba-conductor/ad"
-	"github.com/samba-conductor/conductor-sync/internal/engine"
-	"github.com/samba-conductor/conductor-sync/internal/mapping"
-	"github.com/samba-conductor/conductor-sync/internal/model"
-	"github.com/samba-conductor/conductor-sync/internal/plan"
-	"github.com/samba-conductor/conductor-sync/internal/source"
-	"github.com/samba-conductor/conductor-sync/internal/source/adsource"
-	"github.com/samba-conductor/conductor-sync/internal/store"
+	ad "github.com/openbasalt/samba-conductor-ad"
+	"github.com/openbasalt/samba-conductor-sync/internal/engine"
+	"github.com/openbasalt/samba-conductor-sync/internal/mapping"
+	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
+	"github.com/openbasalt/samba-conductor-sync/internal/source"
+	"github.com/openbasalt/samba-conductor-sync/internal/source/adsource"
+	"github.com/openbasalt/samba-conductor-sync/internal/store"
 )
 
 // switchable is a source whose reader can be replaced between runs (a
