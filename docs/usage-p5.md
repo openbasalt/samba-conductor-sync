@@ -260,9 +260,10 @@ Hosts without systemd timers (containers) set `schedule.in_process = true`:
 `serve` then runs the scheduled applies itself every `schedule.interval`.
 
 Group scope and placement (`include_groups`, `exclude_groups`, group rules
-with priorities): see [`mapping.md`](mapping.md). Measured in the sync lab
-(2026-10-03): resolving four referenced groups and their nested members adds
-about one second to a 2,500-user read.
+with priorities): see [`mapping.md`](mapping.md). Measured in the main lab
+(2026-10-03, conductor-sync on dc1, 2 vCPU): a plan with 2,499 users in
+scope through one include group and one group placement rule takes about
+11 s; the first apply of 2,499 accounts to the fake API about 52 s.
 
 Upgrading from P5: the service unit now loads `state-key` instead of
 `google-sa`. Either create the state key and `key set` the existing key file
