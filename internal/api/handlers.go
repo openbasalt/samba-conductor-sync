@@ -684,6 +684,12 @@ func (s *Server) RunScheduler(ctx context.Context) {
 			s.log.Error("scheduled run: configuration", "err", err)
 			continue
 		}
+		if key, err := s.rt.KeyInfo(ctx, cfg); err != nil || key == nil {
+			// Not set up yet (no service account key): nothing to plan,
+			// and no failed run every interval until it is.
+			s.log.Info("scheduled run skipped: no Google service account key yet")
+			continue
+		}
 		job, ok := s.jobs.start(s.base, "scheduled", "scheduler", s.now, func(ctx context.Context, setRun func(int64)) (string, error) {
 			eng, err := s.rt.Engine(ctx, cfg, "scheduler", nil)
 			if err != nil {
