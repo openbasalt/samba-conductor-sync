@@ -13,7 +13,7 @@ priority: optional
 maintainer: Samba Conductor maintainers <samba-conductor@openbasalt.org>
 vendor: OpenBasalt
 homepage: https://github.com/openbasalt/samba-conductor-sync
-license: MIT
+license: Apache-2.0
 description: |-
   provisioning from Samba AD to Google Workspace
   conductor-sync reads users and groups from Samba Active Directory with a
@@ -66,6 +66,13 @@ contents:
     file_info: {mode: 0644}
   - src: packaging/copyright
     dst: /usr/share/doc/conductor-sync/copyright
+    file_info: {mode: 0644}
+  - src: NOTICE
+    dst: /usr/share/doc/conductor-sync/NOTICE
+    file_info: {mode: 0644}
+  - expand: true
+    src: ${BUILD}/doc/conductor-sync/THIRD-PARTY-LICENSES.gz
+    dst: /usr/share/doc/conductor-sync/THIRD-PARTY-LICENSES.gz
     file_info: {mode: 0644}
   - expand: true
     src: ${BUILD}/doc/conductor-sync/changelog.Debian.gz

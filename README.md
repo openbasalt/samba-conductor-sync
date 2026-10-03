@@ -109,3 +109,5 @@ fake API, Samba AD lab end to end). P5b (2026-10-03): scope and org unit
 placement by AD group, the management API, and the "Google Workspace sync"
 section of conductor (<https://github.com/openbasalt/samba-conductor/blob/main/docs/usage-p5b.md>). Not yet tested
 against a real Google Workspace (read-only check pending a test tenant).
+
+License: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)).
