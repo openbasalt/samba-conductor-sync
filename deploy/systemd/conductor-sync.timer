@@ -1,0 +1,14 @@
+# Every 15 minutes: plan, and apply when the plan is within the safety
+# limits. Nothing is applied while mode = "dry-run", nor before the first
+# manual apply.
+[Unit]
+Description=Samba Conductor provisioning schedule
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=15min
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

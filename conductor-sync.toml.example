@@ -1,0 +1,110 @@
+# /etc/conductor-sync/conductor-sync.toml (root:conductor-sync, 0640)
+#
+# conductor-sync provisions users and groups from Samba AD to Google
+# Workspace. This file holds no secret: credentials are named below and
+# read from systemd credentials (LoadCredential=) or, for manual runs, from
+# credentials_dir (files 0600, owned by the conductor-sync user).
+# Guide: docs/usage-p5.md; mapping reference: docs/mapping.md.
+
+# "dry-run" plans only (the default for a new installation). Switch to
+# "apply" after reviewing the first plan; the first apply is always manual.
+mode = "dry-run"
+connector = "google"
+state_dir = "/var/lib/conductor-sync"
+credentials_dir = "/etc/conductor-sync/credentials"
+# Prometheus textfile (node_exporter --collector.textfile.directory); empty = off.
+metrics_file = ""
+# An apply stops after this many failed operations.
+max_failures = 25
+
+[source]
+realm = "EXAMPLE.COM"
+# Optional: fixed DCs instead of DNS SRV discovery, preferred DCs first,
+# and the DNS servers that resolve the domain.
+dcs = []
+preferred = ["dc1.example.com"]
+dns_servers = []
+ca_file = "/etc/conductor-sync/domain-ca.pem"
+# A dedicated, unprivileged account: Domain Users can read everything the
+# sync needs. Never use an administrator.
+bind_user = "svc.sync"
+auth = "kerberos"                 # or "simple" (LDAP simple bind over TLS)
+password_credential = "ad-bind"   # systemd credential name or absolute 0600 path
+user_bases = ["OU=People,DC=example,DC=com"]
+group_bases = ["OU=Google Groups,DC=example,DC=com"]
+exclude_bases = ["OU=Service Accounts,OU=People,DC=example,DC=com"]
+# Optional: only users that are (nested) members of this group.
+require_group = ""
+# Accounts past accountExpires count as disabled (suspended on Google).
+expired_as_disabled = true
+
+[mapping]
+# Tried in order; the first address in allowed_domains wins.
+primary_email = ["{mail|lower}", "{sAMAccountName|ascii|lower}@example.com"]
+allowed_domains = ["example.com"]
+given_name = ["{givenName}", "{displayName}", "{sAMAccountName}"]
+family_name = ["{sn}", "{sAMAccountName}"]
+default_org_unit = "/"
+# Groups are synced only when group_email is set (and group_bases too).
+group_email = ["{mail|lower}", "{sAMAccountName|slug}@example.com"]
+group_name = ["{cn}"]
+group_description = ["{description}"]
+group_allowed_domains = ["example.com"]
+
+# Optional fields: only the ones listed are managed (and overwritten).
+[mapping.attributes]
+title = "{title}"
+department = "{department}"
+# employee_id = "{employeeID}"
+# phone_work = "{telephoneNumber}"
+# phone_mobile = "{mobile}"
+
+# AD container -> Google org unit; the most specific match wins. The org
+# units must already exist in Google.
+[[mapping.org_units]]
+ad = "OU=People,DC=example,DC=com"
+target = "/Staff"
+
+[[mapping.org_units]]
+ad = "OU=Contractors,OU=People,DC=example,DC=com"
+target = "/Contractors"
+
+[policy]
+suspend_disabled = true          # disabled in AD -> suspended in Google
+create_disabled = false          # do not create accounts for disabled users
+adopt = "never"                  # "email": take over existing accounts with the same address
+remove_unmanaged_members = false # keep members of synced groups that the sync does not manage
+
+# Scheduled runs apply only plans inside these limits; otherwise they stop,
+# record the plan as blocked and alert. 0 = none allowed, -1 = no limit.
+[limits]
+max_creates = 50
+max_suspends = 10
+max_unsuspends = 50
+max_renames = 10
+max_updates = 500
+max_group_changes = 20
+max_membership_changes = 1000
+max_touched_percent = 10       # of the managed accounts (update/rename/suspend/unsuspend)
+min_source_users = 1           # an empty source never means "everybody left"
+max_source_drop_percent = 10   # vs. the last applied run
+
+[google]
+customer = "my_customer"
+# The super administrator the service account acts as (domain-wide delegation).
+admin_subject = "sync-admin@example.com"
+key_credential = "google-sa"     # service account JSON key
+# Ownership marker (externalIds customType); one per sync instance and tenant.
+marker = "conductor-sync"
+requests_per_second = 5
+max_retries = 6
+timeout = "60s"
+member_role = "MEMBER"
+
+[alert]
+webhook_url = ""                     # https (or http to a loopback relay)
+webhook_secret_credential = ""       # HMAC-SHA256 key for X-Conductor-Signature
+
+[delete]
+# conductor-sync delete-user refuses accounts suspended for less than this.
+min_suspended_days = 30
