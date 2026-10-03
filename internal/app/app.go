@@ -29,14 +29,31 @@ import (
 	"github.com/openbasalt/samba-conductor-sync/syncapi"
 )
 
-// GoogleKeySecret is the name of the stored service account key.
-const GoogleKeySecret = "google-service-account-key"
+// Names of the secrets in the state database (also the additional data of
+// their encryption).
+const (
+	GoogleKeySecret     = "google-service-account-key"
+	ADPasswordSecret    = "ad-bind-password"
+	WebhookSecretSecret = "alert-webhook-secret"
+)
+
+// storedName maps an API secret name to its database name.
+var storedName = map[string]string{
+	syncapi.SecretADBindPassword: ADPasswordSecret,
+	syncapi.SecretGoogleKey:      GoogleKeySecret,
+	syncapi.SecretWebhookSecret:  WebhookSecretSecret,
+}
+
+// StoredName returns the database name of an API secret name ("" when
+// unknown).
+func StoredName(apiName string) string { return storedName[apiName] }
 
 // Settings version origins.
 const (
 	OriginBootstrap = "bootstrap"
 	OriginAPI       = "api"
 	OriginCLI       = "cli"
+	OriginRollback  = "rollback"
 )
 
 // Runtime is one process's view of conductor-sync.
@@ -58,6 +75,7 @@ type Runtime struct {
 // Source is the AD source with the extra read-only calls the API uses.
 type Source interface {
 	source.Source
+	Ping(ctx context.Context) (string, error)
 	Check(ctx context.Context) (string, []model.ScopeGroup, error)
 	Preview(ctx context.Context, query string, limit int) ([]adsource.Preview, []model.ScopeGroup, error)
 }
@@ -89,7 +107,9 @@ func New(cfg *config.Config, st *store.Store, stderr io.Writer) *Runtime {
 	r.Connect = func(gc google.Config, key *google.ServiceAccountKey, write bool) (connector.Connector, error) {
 		return google.New(gc, key, write, google.Options{})
 	}
-	r.NewSource = func(c *config.Config) Source { return &LazySource{Cfg: c} }
+	r.NewSource = func(c *config.Config) Source {
+		return &LazySource{Cfg: c, Password: func() (string, error) { return r.ADPassword(context.Background(), c) }}
+	}
 	return r
 }
 
@@ -121,6 +141,20 @@ func (r *Runtime) Effective(ctx context.Context) (*config.Config, error) {
 // as a new version based on base (ErrStaleVersion if another edit came
 // first). An unchanged configuration stores nothing.
 func (r *Runtime) SaveSettings(ctx context.Context, base int64, s syncapi.Settings, actor, origin, comment string) (int64, []syncapi.Change, error) {
+	return r.SaveSettingsWith(ctx, base, s, actor, origin, comment, nil)
+}
+
+// SealedSecret is a secret to store together with a settings version.
+type SealedSecret struct {
+	// APIName is the syncapi secret name.
+	APIName string
+	Value   []byte
+}
+
+// SaveSettingsWith is SaveSettings, also storing secrets (encrypted) in
+// the same transaction. With secrets, a version is stored even when no
+// setting changed (the version records who replaced them).
+func (r *Runtime) SaveSettingsWith(ctx context.Context, base int64, s syncapi.Settings, actor, origin, comment string, secrets []SealedSecret) (int64, []syncapi.Change, error) {
 	cur, err := r.Effective(ctx)
 	if err != nil {
 		return 0, nil, err
@@ -134,19 +168,40 @@ func (r *Runtime) SaveSettings(ctx context.Context, base int64, s syncapi.Settin
 	}
 	norm := config.SettingsOf(next)
 	changes := syncapi.DiffSettings(config.SettingsOf(cur), norm)
-	if len(changes) == 0 && cur.SettingsVersion != 0 {
+	if len(changes) == 0 && cur.SettingsVersion != 0 && len(secrets) == 0 {
 		return cur.SettingsVersion, nil, nil
 	}
 	raw, err := json.Marshal(norm)
 	if err != nil {
 		return 0, nil, err
 	}
+	var rows []store.SecretRow
+	for _, sec := range secrets {
+		row, err := r.seal(sec.APIName, sec.Value, actor)
+		if err != nil {
+			return 0, nil, err
+		}
+		rows = append(rows, row)
+	}
 	ch, _ := json.Marshal(changes)
-	id, err := r.Store.SaveConfig(ctx, base, actor, origin, comment, raw, ch)
+	id, err := r.Store.SaveConfig(ctx, base, actor, origin, comment, raw, ch, rows...)
 	if err != nil {
 		return 0, nil, err
 	}
 	return id, changes, nil
+}
+
+// VersionSettings returns the settings of a stored version.
+func (r *Runtime) VersionSettings(ctx context.Context, id int64) (*store.ConfigVersion, *syncapi.Settings, error) {
+	v, err := r.Store.GetConfig(ctx, id)
+	if err != nil || v == nil {
+		return nil, nil, err
+	}
+	var s syncapi.Settings
+	if err := json.Unmarshal(v.Settings, &s); err != nil {
+		return nil, nil, fmt.Errorf("stored settings version %d: %w", id, err)
+	}
+	return v, &s, nil
 }
 
 // Box returns the state-key box (secrets at rest).
@@ -156,6 +211,138 @@ func (r *Runtime) Box() (*secretbox.Box, error) {
 		return nil, fmt.Errorf("state key (api.state_key_credential): %w", err)
 	}
 	return secretbox.New(b)
+}
+
+// seal encrypts a secret value into a row (not stored yet).
+func (r *Runtime) seal(apiName string, value []byte, actor string) (store.SecretRow, error) {
+	name := storedName[apiName]
+	if name == "" {
+		return store.SecretRow{}, fmt.Errorf("unknown secret %q", apiName)
+	}
+	box, err := r.Box()
+	if err != nil {
+		return store.SecretRow{}, err
+	}
+	nonce, ct, err := box.Seal(name, value)
+	if err != nil {
+		return store.SecretRow{}, err
+	}
+	return store.SecretRow{Name: name, Nonce: nonce, Ciphertext: ct, Actor: actor}, nil
+}
+
+// SetSecret validates and stores a secret (encrypted). The Google key goes
+// through SetKey.
+func (r *Runtime) SetSecret(ctx context.Context, apiName string, value []byte, actor string) error {
+	if err := syncapi.ValidateSecret(apiName, string(value)); err != nil {
+		return err
+	}
+	row, err := r.seal(apiName, value, actor)
+	if err != nil {
+		return err
+	}
+	return r.Store.PutSecret(ctx, row)
+}
+
+// RemoveSecret deletes a stored secret; it reports whether one was stored.
+func (r *Runtime) RemoveSecret(ctx context.Context, apiName string) (bool, error) {
+	name := storedName[apiName]
+	if name == "" {
+		return false, fmt.Errorf("unknown secret %q", apiName)
+	}
+	return r.Store.DeleteSecret(ctx, name)
+}
+
+// openStored decrypts a stored secret (nil when none is stored).
+func (r *Runtime) openStored(ctx context.Context, name string) ([]byte, error) {
+	row, err := r.Store.GetSecret(ctx, name)
+	if err != nil || row == nil {
+		return nil, err
+	}
+	box, err := r.Box()
+	if err != nil {
+		return nil, err
+	}
+	return box.Open(name, row.Nonce, row.Ciphertext)
+}
+
+// ErrNoADPassword means no AD bind password is configured.
+var ErrNoADPassword = errors.New("no AD bind password: set it in conductor (Google Workspace sync > Settings > Connection), with `conductor-sync secret set ad-bind-password`, or name a credential in source.password_credential")
+
+// ADPassword returns the AD bind password in use: a connection test's
+// override, else the stored one (decrypted with the state key), else the
+// credential named by source.password_credential.
+func (r *Runtime) ADPassword(ctx context.Context, cfg *config.Config) (string, error) {
+	if pw := cfg.ADPasswordOverride(); pw != "" {
+		return pw, nil
+	}
+	b, err := r.openStored(ctx, ADPasswordSecret)
+	if err != nil {
+		return "", fmt.Errorf("stored AD bind password: %w", err)
+	}
+	if b != nil {
+		return string(b), nil
+	}
+	if cfg.Source.PasswordCredential == "" {
+		return "", ErrNoADPassword
+	}
+	return secret.LoadString(cfg.Source.PasswordCredential)
+}
+
+// WebhookSecret returns the HMAC key of the alert webhook (nil = unsigned):
+// the stored one, else the credential named by
+// alert.webhook_secret_credential.
+func (r *Runtime) WebhookSecret(ctx context.Context, cfg *config.Config) ([]byte, error) {
+	b, err := r.openStored(ctx, WebhookSecretSecret)
+	if err != nil {
+		return nil, fmt.Errorf("stored webhook secret: %w", err)
+	}
+	if b != nil {
+		return b, nil
+	}
+	if cfg.Alert.WebhookSecretCredential == "" {
+		return nil, nil
+	}
+	b, err = secret.Load(cfg.Alert.WebhookSecretCredential)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(strings.TrimSpace(string(b))), nil
+}
+
+// Secrets describes every secret: whether it is configured, where it comes
+// from, who set it. Values are never returned (nor fingerprints).
+func (r *Runtime) Secrets(ctx context.Context, cfg *config.Config) ([]syncapi.SecretInfo, error) {
+	out := make([]syncapi.SecretInfo, 0, len(syncapi.SecretNames))
+	for _, apiName := range syncapi.SecretNames {
+		info := syncapi.SecretInfo{Name: apiName}
+		var cred string
+		switch apiName {
+		case syncapi.SecretADBindPassword:
+			cred = cfg.Source.PasswordCredential
+		case syncapi.SecretGoogleKey:
+			cred = cfg.Google.KeyCredential
+		case syncapi.SecretWebhookSecret:
+			cred = cfg.Alert.WebhookSecretCredential
+		}
+		info.Credential = cred
+		row, err := r.Store.GetSecret(ctx, storedName[apiName])
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case row != nil:
+			info.Configured, info.Source, info.SetAt, info.SetBy = true, "database", row.UpdatedAt, row.Actor
+		case cred != "":
+			if _, err := secret.Load(cred); err != nil {
+				// The reason names the file, never its content.
+				info.Error = err.Error()
+			} else {
+				info.Configured, info.Source = true, "credential"
+			}
+		}
+		out = append(out, info)
+	}
+	return out, nil
 }
 
 type keyMeta struct {
@@ -169,16 +356,12 @@ func (r *Runtime) SetKey(ctx context.Context, keyJSON []byte, actor string) (*sy
 	if err != nil {
 		return nil, err
 	}
-	box, err := r.Box()
+	row, err := r.seal(syncapi.SecretGoogleKey, keyJSON, actor)
 	if err != nil {
 		return nil, err
 	}
-	nonce, ct, err := box.Seal(GoogleKeySecret, keyJSON)
-	if err != nil {
-		return nil, err
-	}
-	meta, _ := json.Marshal(keyMeta{ClientEmail: k.ClientEmail, KeyID: k.PrivateKeyID})
-	if err := r.Store.PutSecret(ctx, store.SecretRow{Name: GoogleKeySecret, Nonce: nonce, Ciphertext: ct, Meta: meta, Actor: actor}); err != nil {
+	row.Meta, _ = json.Marshal(keyMeta{ClientEmail: k.ClientEmail, KeyID: k.PrivateKeyID})
+	if err := r.Store.PutSecret(ctx, row); err != nil {
 		return nil, err
 	}
 	return r.KeyInfo(ctx, r.File)
@@ -216,20 +399,12 @@ var ErrNoKey = errors.New("no Google service account key: set it in conductor (G
 // ServiceAccountKey loads the key in use: the stored one (decrypted with
 // the state key) or the credential file.
 func (r *Runtime) ServiceAccountKey(ctx context.Context, cfg *config.Config) (*google.ServiceAccountKey, error) {
-	row, err := r.Store.GetSecret(ctx, GoogleKeySecret)
+	raw, err := r.openStored(ctx, GoogleKeySecret)
 	if err != nil {
 		return nil, err
 	}
-	var raw []byte
 	switch {
-	case row != nil:
-		box, err := r.Box()
-		if err != nil {
-			return nil, err
-		}
-		if raw, err = box.Open(GoogleKeySecret, row.Nonce, row.Ciphertext); err != nil {
-			return nil, err
-		}
+	case raw != nil:
 	case cfg.Google.KeyCredential != "":
 		if raw, err = secret.Load(cfg.Google.KeyCredential); err != nil {
 			return nil, err
@@ -258,13 +433,11 @@ func (r *Runtime) Engine(ctx context.Context, cfg *config.Config, actor string, 
 	senders = append(senders, alert.Log{W: out})
 	if cfg.Alert.WebhookURL != "" {
 		wh := alert.Webhook{URL: cfg.Alert.WebhookURL}
-		if cfg.Alert.WebhookSecretCredential != "" {
-			b, err := secret.Load(cfg.Alert.WebhookSecretCredential)
-			if err != nil {
-				return nil, err
-			}
-			wh.Secret = []byte(strings.TrimSpace(string(b)))
+		b, err := r.WebhookSecret(ctx, cfg)
+		if err != nil {
+			return nil, err
 		}
+		wh.Secret = b
 		senders = append(senders, wh)
 	}
 	var key *google.ServiceAccountKey
@@ -300,12 +473,21 @@ func (r *Runtime) Engine(ctx context.Context, cfg *config.Config, actor string, 
 // LazySource loads the bind password only when the source is read.
 type LazySource struct {
 	Cfg *config.Config
-	r   *adsource.Reader
+	// Password returns the bind password (Runtime.ADPassword); nil: the
+	// credential named by source.password_credential.
+	Password func() (string, error)
+	r        *adsource.Reader
 }
 
 func (l *LazySource) reader() (*adsource.Reader, error) {
 	if l.r == nil {
-		pw, err := secret.LoadString(l.Cfg.Source.PasswordCredential)
+		var pw string
+		var err error
+		if l.Password != nil {
+			pw, err = l.Password()
+		} else {
+			pw, err = secret.LoadString(l.Cfg.Source.PasswordCredential)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -325,6 +507,15 @@ func (l *LazySource) Read(ctx context.Context) (*source.Result, error) {
 		return nil, err
 	}
 	return r.Read(ctx)
+}
+
+// Ping implements Source.
+func (l *LazySource) Ping(ctx context.Context) (string, error) {
+	r, err := l.reader()
+	if err != nil {
+		return "", err
+	}
+	return r.Ping(ctx)
 }
 
 // Check implements Source.

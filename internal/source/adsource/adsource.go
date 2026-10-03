@@ -14,6 +14,8 @@ package adsource
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -38,13 +40,17 @@ type Config struct {
 	Preferred []string `toml:"preferred"`
 	// DNSServers resolve the domain when the host resolver does not.
 	DNSServers []string `toml:"dns_servers"`
-	CAFile     string   `toml:"ca_file"`
-	BindUser   string   `toml:"bind_user"`
+	// CAFile is the domain CA (PEM) pinned for LDAPS; CAPEM, the same
+	// content inline (set through the management API), wins over it.
+	CAFile   string `toml:"ca_file"`
+	CAPEM    string `toml:"ca_pem,omitempty"`
+	BindUser string `toml:"bind_user"`
 	// Auth is "kerberos" (default) or "simple" (LDAP simple bind over TLS).
 	Auth string `toml:"auth"`
 	// PasswordCredential names the bind password: a systemd credential
 	// name (read from $CREDENTIALS_DIRECTORY) or an absolute path to a
-	// file that only the service user can read.
+	// file that only the service user can read. Optional when the password
+	// is stored (encrypted) through the management API, which wins.
 	PasswordCredential string `toml:"password_credential"`
 	// UserBases and GroupBases are searched (subtree) for users and groups.
 	UserBases    []string `toml:"user_bases"`
@@ -85,11 +91,16 @@ func (c *Config) Validate() error {
 	if c.Realm == "" {
 		errs = append(errs, errors.New("source.realm is required"))
 	}
-	if c.CAFile == "" {
-		errs = append(errs, errors.New("source.ca_file is required (the domain CA is pinned)"))
+	if c.CAFile == "" && c.CAPEM == "" {
+		errs = append(errs, errors.New("source.ca_file (or ca_pem) is required (the domain CA is pinned)"))
 	}
-	if c.BindUser == "" || c.PasswordCredential == "" {
-		errs = append(errs, errors.New("source.bind_user and source.password_credential are required"))
+	if c.CAPEM != "" {
+		if _, err := ParseCAPEM(c.CAPEM); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if c.BindUser == "" {
+		errs = append(errs, errors.New("source.bind_user is required"))
 	}
 	switch c.Auth {
 	case "", "kerberos", "simple":
@@ -135,6 +146,41 @@ func (c *Config) ValidateScope() error {
 	return errors.Join(errs...)
 }
 
+// MaxCAPEM bounds an inline CA bundle.
+const MaxCAPEM = 64 << 10
+
+// ParseCAPEM parses an inline CA bundle: only CERTIFICATE blocks, at least
+// one, each a valid X.509 certificate.
+func ParseCAPEM(text string) ([]*x509.Certificate, error) {
+	if len(text) > MaxCAPEM {
+		return nil, fmt.Errorf("source.ca_pem: larger than %d bytes", MaxCAPEM)
+	}
+	var out []*x509.Certificate
+	rest := []byte(text)
+	for {
+		var b *pem.Block
+		b, rest = pem.Decode(rest)
+		if b == nil {
+			break
+		}
+		if b.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("source.ca_pem: a %s block (only certificates are accepted)", b.Type)
+		}
+		c, err := x509.ParseCertificate(b.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("source.ca_pem: %w", err)
+		}
+		out = append(out, c)
+	}
+	if strings.TrimSpace(string(rest)) != "" {
+		return nil, errors.New("source.ca_pem: text outside the PEM blocks")
+	}
+	if len(out) == 0 {
+		return nil, errors.New("source.ca_pem: no certificate")
+	}
+	return out, nil
+}
+
 func (c *Config) expiredAsDisabled() bool { return c.ExpiredAsDisabled == nil || *c.ExpiredAsDisabled }
 
 // Reader reads the source.
@@ -153,13 +199,17 @@ func NewReader(cfg Config, rules *mapping.Rules, password string) (*Reader, erro
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	pemCA, err := os.ReadFile(cfg.CAFile)
-	if err != nil {
-		return nil, fmt.Errorf("source.ca_file: %w", err)
+	pemCA, field := []byte(cfg.CAPEM), "source.ca_pem"
+	if cfg.CAPEM == "" {
+		b, err := os.ReadFile(cfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("source.ca_file: %w", err)
+		}
+		pemCA, field = b, "source.ca_file"
 	}
 	pool, err := ad.CertPoolFromPEM(pemCA)
 	if err != nil {
-		return nil, fmt.Errorf("source.ca_file: %w", err)
+		return nil, fmt.Errorf("%s: %w", field, err)
 	}
 	adCfg := ad.Config{Realm: cfg.Realm, DCs: cfg.DCs, Preferred: cfg.Preferred, RootCAs: pool}
 	if len(cfg.DNSServers) > 0 {
@@ -576,6 +626,18 @@ func (r *Reader) ReadWith(ctx context.Context, conn *ad.Conn) (*source.Result, e
 }
 
 // ---- preview and connection test (no write anywhere) ----
+
+// Ping signs in to AD (TLS with the pinned CA, then the bind) and closes
+// the connection: the connection test of the AD settings, without reading
+// anything.
+func (r *Reader) Ping(ctx context.Context) (string, error) {
+	conn, closeFn, err := r.connect(ctx)
+	if err != nil {
+		return "", fmt.Errorf("connect: %w", err)
+	}
+	defer closeFn()
+	return fmt.Sprintf("connected to %s as %s", conn.DC().Host, r.cfg.BindUser), nil
+}
 
 // Check connects, resolves the referenced groups (missing ones are
 // reported, not fatal) and counts the users below the bases.

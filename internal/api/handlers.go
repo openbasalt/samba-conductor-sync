@@ -97,6 +97,14 @@ func (s *Server) dispatch(ctx context.Context, req syncapi.Request, params synca
 		return s.configHistory(ctx, p)
 	case *syncapi.KeySetParams:
 		return s.keySet(ctx, req, p)
+	case *syncapi.ConfigVersionParams:
+		return s.configVersion(ctx, p)
+	case *syncapi.ConfigRollbackParams:
+		return s.configRollback(ctx, req, p)
+	case *syncapi.SecretSetParams:
+		return s.secretSet(ctx, req, p)
+	case *syncapi.SecretRemoveParams:
+		return s.secretRemove(ctx, req, p)
 	case *syncapi.ConnectionTestParams:
 		return s.connectionTest(ctx, p)
 	case *syncapi.MappingPreviewParams:
@@ -238,7 +246,9 @@ func (s *Server) runView(ctx context.Context, r *store.Run) *syncapi.Run {
 func (s *Server) hostInfo(cfg *config.Config) syncapi.HostInfo {
 	return syncapi.HostInfo{ConfigPath: cfg.Path, Realm: cfg.Source.Realm, DCs: cfg.Source.DCs, BindUser: cfg.Source.BindUser,
 		Auth: cfg.Source.Auth, StateDir: cfg.StateDir, Marker: cfg.Google.Marker, APIBaseURL: cfg.Google.APIBaseURL,
-		AlertWebhook: cfg.Alert.WebhookURL != ""}
+		AlertWebhook: cfg.Alert.WebhookURL != "", ConnectionStored: cfg.ConnectionStored,
+		PasswordCredential: cfg.Source.PasswordCredential, KeyCredential: cfg.Google.KeyCredential,
+		WebhookSecretCredential: cfg.Alert.WebhookSecretCredential}
 }
 
 func (s *Server) configGet(ctx context.Context) (*syncapi.ConfigView, error) {
@@ -247,6 +257,9 @@ func (s *Server) configGet(ctx context.Context) (*syncapi.ConfigView, error) {
 		return nil, err
 	}
 	v := &syncapi.ConfigView{Version: cfg.SettingsVersion, Settings: config.SettingsOf(cfg), Host: s.hostInfo(cfg)}
+	if v.Secrets, err = s.rt.Secrets(ctx, cfg); err != nil {
+		return nil, err
+	}
 	if cv, err := s.rt.Store.LatestConfig(ctx); err != nil {
 		return nil, err
 	} else if cv != nil {
@@ -268,25 +281,117 @@ func (s *Server) configValidate(ctx context.Context, p *syncapi.ConfigValidatePa
 }
 
 func (s *Server) configUpdate(ctx context.Context, req syncapi.Request, p *syncapi.ConfigUpdateParams) (*syncapi.ConfigUpdateResult, error) {
-	id, changes, err := s.rt.SaveSettings(ctx, p.BaseVersion, p.Settings, actorName(req.Actor), app.OriginAPI, p.Comment)
+	return s.saveVersion(ctx, req, versionChange{base: p.BaseVersion, settings: p.Settings, comment: p.Comment, origin: app.OriginAPI,
+		markerConfirmation: p.MarkerConfirmation, adPassword: p.ADPassword, action: "config.update"})
+}
+
+// versionChange is a new settings version to validate and store.
+type versionChange struct {
+	base               int64
+	settings           syncapi.Settings
+	comment, origin    string
+	markerConfirmation string
+	// adPassword replaces the stored AD bind password with the version
+	// (write only; never audited).
+	adPassword string
+	action     string
+	// note is a first audit line (a rollback names its source version).
+	note string
+}
+
+// errMarker refuses a marker change without its typed confirmation.
+var errMarker = &syncapi.Error{Code: syncapi.CodeInvalid, Message: "the ownership marker changes: the typed confirmation is required",
+	Details: []string{"changing google.marker orphans the accounts marked with the previous value"}}
+
+// saveVersion validates a change against the settings in force, checks
+// what a web session must not do silently (the marker without its typed
+// confirmation, an AD connection conductor-sync cannot sign in with), then
+// stores the version (and the bind password, in the same transaction).
+func (s *Server) saveVersion(ctx context.Context, req syncapi.Request, vc versionChange) (*syncapi.ConfigUpdateResult, error) {
+	cur, err := s.rt.Effective(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if vc.base != cur.SettingsVersion {
+		return nil, store.ErrStaleVersion
+	}
+	next, err := s.rt.File.Overlay(vc.settings, 0)
+	if err != nil {
+		return nil, errInvalid{msg: "the settings are not valid", details: config.ErrorList(err)}
+	}
+	if next.Google.Marker != cur.Google.Marker && vc.markerConfirmation != syncapi.MarkerConfirmation(next.Google.Marker) {
+		return nil, errMarker
+	}
+	if config.ADConnectionChanged(cur, next) || vc.adPassword != "" {
+		test := next
+		if vc.adPassword != "" {
+			test = next.WithADPassword(vc.adPassword)
+		}
+		if _, err := s.rt.NewSource(test).Ping(ctx); err != nil {
+			return nil, errInvalid{msg: "conductor-sync could not sign in to AD with the new connection settings; nothing was saved",
+				details: []string{"could not sign in to AD with the new connection settings (nothing was saved): " + err.Error()}}
+		}
+	}
+	var secrets []app.SealedSecret
+	if vc.adPassword != "" {
+		secrets = append(secrets, app.SealedSecret{APIName: syncapi.SecretADBindPassword, Value: []byte(vc.adPassword)})
+	}
+	id, changes, err := s.rt.SaveSettingsWith(ctx, vc.base, vc.settings, actorName(req.Actor), vc.origin, vc.comment, secrets)
 	if err != nil {
 		if errors.Is(err, store.ErrStaleVersion) {
 			return nil, err
 		}
 		return nil, errInvalid{msg: "the settings are not valid", details: config.ErrorList(err)}
 	}
-	if len(changes) > 0 {
+	res := &syncapi.ConfigUpdateResult{Version: id, Changes: changes}
+	if len(changes) > 0 || len(secrets) > 0 {
 		var lines []string
+		if vc.note != "" {
+			lines = append(lines, vc.note)
+		}
+		if vc.comment != "" {
+			lines = append(lines, vc.comment)
+		}
 		for _, c := range changes {
 			lines = append(lines, c.String())
 		}
-		detail := strings.Join(lines, "\n")
-		if p.Comment != "" {
-			detail = p.Comment + "\n" + detail
+		// Secrets: the name and that it changed, never a value or a
+		// fingerprint.
+		for _, sec := range secrets {
+			lines = append(lines, "secret "+sec.APIName+": replaced")
+			res.Secrets = append(res.Secrets, sec.APIName)
 		}
-		s.audit(ctx, req, "config.update", fmt.Sprintf("version %d", id), detail, store.ResultOK)
+		s.audit(ctx, req, vc.action, fmt.Sprintf("version %d", id), strings.Join(lines, "\n"), store.ResultOK)
 	}
-	return &syncapi.ConfigUpdateResult{Version: id, Changes: changes}, nil
+	return res, nil
+}
+
+func (s *Server) configVersion(ctx context.Context, p *syncapi.ConfigVersionParams) (*syncapi.ConfigVersionDetail, error) {
+	v, settings, err := s.rt.VersionSettings(ctx, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return nil, &syncapi.Error{Code: syncapi.CodeNotFound, Message: fmt.Sprintf("no settings version %d", p.ID)}
+	}
+	out := &syncapi.ConfigVersionDetail{ConfigVersion: syncapi.ConfigVersion{ID: v.ID, At: v.At, Actor: v.Actor, Origin: v.Origin, Comment: v.Comment},
+		Settings: *settings}
+	_ = json.Unmarshal(v.Changes, &out.Changes)
+	return out, nil
+}
+
+// configRollback stores the settings of an earlier version as the newest
+// one. Secrets are not versioned and are left as they are.
+func (s *Server) configRollback(ctx context.Context, req syncapi.Request, p *syncapi.ConfigRollbackParams) (*syncapi.ConfigUpdateResult, error) {
+	v, settings, err := s.rt.VersionSettings(ctx, p.Version)
+	if err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return nil, &syncapi.Error{Code: syncapi.CodeNotFound, Message: fmt.Sprintf("no settings version %d", p.Version)}
+	}
+	return s.saveVersion(ctx, req, versionChange{base: p.BaseVersion, settings: *settings, comment: p.Comment, origin: app.OriginRollback,
+		markerConfirmation: p.MarkerConfirmation, action: "config.rollback", note: fmt.Sprintf("rollback to version %d", p.Version)})
 }
 
 func (s *Server) configHistory(ctx context.Context, p *syncapi.ConfigHistoryParams) ([]syncapi.ConfigVersion, error) {
@@ -313,6 +418,68 @@ func (s *Server) configExport(ctx context.Context) (*syncapi.ConfigExport, error
 		return nil, err
 	}
 	return &syncapi.ConfigExport{TOML: t}, nil
+}
+
+// ---- secrets (write only) ----
+
+func (s *Server) secretInfo(ctx context.Context, name string) (*syncapi.SecretInfo, error) {
+	cfg, err := s.rt.Effective(ctx)
+	if err != nil {
+		return nil, err
+	}
+	all, err := s.rt.Secrets(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	for _, i := range all {
+		if i.Name == name {
+			return &i, nil
+		}
+	}
+	return &syncapi.SecretInfo{Name: name}, nil
+}
+
+// secretSet stores a secret. The AD bind password is stored only after
+// conductor-sync signed in to AD with it (the connection in force). The
+// audit names the secret and says it changed: no value, no fingerprint.
+func (s *Server) secretSet(ctx context.Context, req syncapi.Request, p *syncapi.SecretSetParams) (*syncapi.SecretInfo, error) {
+	before, err := s.secretInfo(ctx, p.Name)
+	if err != nil {
+		return nil, err
+	}
+	if p.Name == syncapi.SecretADBindPassword {
+		cfg, err := s.rt.Effective(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.rt.NewSource(cfg.WithADPassword(p.Value)).Ping(ctx); err != nil {
+			return nil, errInvalid{msg: "conductor-sync could not sign in to AD with this password; nothing was saved",
+				details: []string{"could not sign in to AD with this password (nothing was saved): " + err.Error()}}
+		}
+	}
+	if err := s.rt.SetSecret(ctx, p.Name, []byte(p.Value), actorName(req.Actor)); err != nil {
+		return nil, errInvalid{msg: err.Error()}
+	}
+	what := "set"
+	if before.Source == "database" {
+		what = "replaced"
+	}
+	s.audit(ctx, req, "secret.set", p.Name, "secret "+p.Name+": "+what, store.ResultOK)
+	return s.secretInfo(ctx, p.Name)
+}
+
+// secretRemove deletes a stored secret: the credential file named in the
+// configuration (if any) is used again.
+func (s *Server) secretRemove(ctx context.Context, req syncapi.Request, p *syncapi.SecretRemoveParams) (*syncapi.SecretInfo, error) {
+	existed, err := s.rt.RemoveSecret(ctx, p.Name)
+	if err != nil {
+		return nil, err
+	}
+	if !existed {
+		return nil, &syncapi.Error{Code: syncapi.CodeNotFound, Message: "no stored value for " + p.Name}
+	}
+	s.audit(ctx, req, "secret.remove", p.Name, "secret "+p.Name+": removed", store.ResultOK)
+	return s.secretInfo(ctx, p.Name)
 }
 
 // ---- key ----
@@ -353,6 +520,9 @@ func (s *Server) connectionTest(ctx context.Context, p *syncapi.ConnectionTestPa
 	cfg, err := s.draft(ctx, p.Settings)
 	if err != nil {
 		return nil, err
+	}
+	if p.ADPassword != "" {
+		cfg = cfg.WithADPassword(p.ADPassword)
 	}
 	out := &syncapi.TestResult{}
 	detail, groups, err := s.rt.NewSource(cfg).Check(ctx)

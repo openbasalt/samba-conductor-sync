@@ -13,6 +13,7 @@
 //	conductor-sync serve                     (the management API for conductor)
 //	conductor-sync config   export | import [FILE] | history
 //	conductor-sync key      set FILE | show
+//	conductor-sync secret   status | set NAME | remove NAME   (value on stdin)
 //	conductor-sync version
 //
 // Every command takes --config (default /etc/conductor-sync/conductor-sync.toml).
@@ -41,7 +42,6 @@ import (
 	"github.com/openbasalt/samba-conductor-sync/internal/engine"
 	"github.com/openbasalt/samba-conductor-sync/internal/model"
 	"github.com/openbasalt/samba-conductor-sync/internal/plan"
-	"github.com/openbasalt/samba-conductor-sync/internal/secret"
 	"github.com/openbasalt/samba-conductor-sync/internal/store"
 )
 
@@ -79,6 +79,8 @@ commands:
   serve          run the local management API used by conductor's web UI
   config         export | import [FILE] | history of the sync settings
   key            set FILE | show the Google service account key (stored encrypted)
+  secret         status | set NAME | remove NAME: the AD bind password and the
+                 webhook secret, stored encrypted (the value is read from stdin)
   version
 `)
 }
@@ -125,7 +127,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fs.StringVar(&kind, "kind", "", "user or group")
 	case "delete-user":
 		fs.StringVar(&confirm, "confirm", "", "the account's exact address (non-interactive confirmation)")
-	case "status", "audit", "check-config", "serve", "config", "key":
+	case "status", "audit", "check-config", "serve", "config", "key", "secret":
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", cmd)
 		usage(stderr)
@@ -167,6 +169,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return configCmd(ctx, rt, cfg, positional, stdout, stderr)
 	case "key":
 		return keyCmd(ctx, rt, cfg, positional, stdout, stderr)
+	case "secret":
+		return secretCmd(ctx, rt, cfg, positional, stdin, stdout, stderr)
 	case "status":
 		return status(ctx, cfg, st, stdout, stderr)
 	case "history":
@@ -244,8 +248,28 @@ func checkConfig(ctx context.Context, rt *app.Runtime, cfg *config.Config, stdou
 	} else {
 		fmt.Fprintln(stdout, "sync settings: from the file")
 	}
+	if cfg.ConnectionStored {
+		fmt.Fprintf(stdout, "connection settings (AD, Google tuning, marker, alert webhook): stored version %d; the file's are not in force\n", cfg.SettingsVersion)
+	} else {
+		fmt.Fprintln(stdout, "connection settings: from the file")
+	}
 	failed := false
-	if _, err := secret.LoadString(cfg.Source.PasswordCredential); err != nil {
+	secrets, err := rt.Secrets(ctx, cfg)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitError
+	}
+	for _, si := range secrets {
+		switch {
+		case si.Configured:
+			fmt.Fprintf(stdout, "secret %s: configured (%s)\n", si.Name, si.Source)
+		case si.Error != "":
+			fmt.Fprintf(stderr, "secret %s: %s\n", si.Name, si.Error)
+		default:
+			fmt.Fprintf(stdout, "secret %s: not configured\n", si.Name)
+		}
+	}
+	if _, err := rt.ADPassword(ctx, cfg); err != nil {
 		fmt.Fprintln(stderr, "AD bind password:", err)
 		failed = true
 	} else {

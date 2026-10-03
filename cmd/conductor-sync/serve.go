@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +16,7 @@ import (
 	"github.com/openbasalt/samba-conductor-sync/internal/app"
 	"github.com/openbasalt/samba-conductor-sync/internal/config"
 	"github.com/openbasalt/samba-conductor-sync/internal/store"
+	"github.com/openbasalt/samba-conductor-sync/syncapi"
 )
 
 // serve runs the management API (and the in-process scheduler when
@@ -150,5 +153,84 @@ func keyCmd(ctx context.Context, rt *app.Runtime, cfg *config.Config, args []str
 		return exitOK
 	}
 	fmt.Fprintln(stderr, "usage: conductor-sync key set FILE | show")
+	return exitUsage
+}
+
+// secretNames maps the CLI secret names to the API names.
+var secretNames = map[string]string{
+	"ad-bind-password":     syncapi.SecretADBindPassword,
+	"alert-webhook-secret": syncapi.SecretWebhookSecret,
+	"google-key":           syncapi.SecretGoogleKey,
+}
+
+// secretCmd: status | set NAME | remove NAME. A value is read from stdin
+// (one line), never from the command line.
+func secretCmd(ctx context.Context, rt *app.Runtime, cfg *config.Config, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	const use = "usage: conductor-sync secret status | set ad-bind-password|alert-webhook-secret | remove ad-bind-password|alert-webhook-secret|google-key"
+	switch {
+	case len(args) == 1 && args[0] == "status":
+		infos, err := rt.Secrets(ctx, cfg)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitError
+		}
+		tw := tabwriter.NewWriter(stdout, 2, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "SECRET\tSTATE\tSOURCE\tSET\tBY")
+		for _, i := range infos {
+			state := "not configured"
+			if i.Configured {
+				state = "configured"
+			} else if i.Error != "" {
+				state = "unreadable credential"
+			}
+			at := ""
+			if !i.SetAt.IsZero() {
+				at = i.SetAt.Local().Format("2006-01-02 15:04")
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", i.Name, state, i.Source, at, i.SetBy)
+		}
+		_ = tw.Flush()
+		return exitOK
+	case len(args) == 2 && args[0] == "set":
+		name := secretNames[args[1]]
+		if name == "" || name == syncapi.SecretGoogleKey {
+			fmt.Fprintln(stderr, use+" (the Google key: conductor-sync key set FILE)")
+			return exitUsage
+		}
+		line, err := bufio.NewReader(io.LimitReader(stdin, 8<<10)).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			fmt.Fprintln(stderr, err)
+			return exitError
+		}
+		value := strings.TrimRight(line, "\r\n")
+		if err := rt.SetSecret(ctx, name, []byte(value), cliActor()); err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitError
+		}
+		d, _ := json.Marshal(map[string]string{"detail": "secret " + name + ": replaced"})
+		_, _ = rt.Store.AppendAudit(ctx, store.AuditEvent{Actor: cliActor(), Action: "secret.set", Target: name, Detail: string(d), Result: store.ResultOK})
+		fmt.Fprintf(stdout, "stored (encrypted): %s\n", name)
+		return exitOK
+	case len(args) == 2 && args[0] == "remove":
+		name := secretNames[args[1]]
+		if name == "" {
+			fmt.Fprintln(stderr, use)
+			return exitUsage
+		}
+		existed, err := rt.RemoveSecret(ctx, name)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitError
+		}
+		if !existed {
+			fmt.Fprintln(stdout, "nothing stored for", name)
+			return exitOK
+		}
+		d, _ := json.Marshal(map[string]string{"detail": "secret " + name + ": removed"})
+		_, _ = rt.Store.AppendAudit(ctx, store.AuditEvent{Actor: cliActor(), Action: "secret.remove", Target: name, Detail: string(d), Result: store.ResultOK})
+		fmt.Fprintf(stdout, "removed: %s (the credential file named in the configuration, if any, is used again)\n", name)
+		return exitOK
+	}
+	fmt.Fprintln(stderr, use)
 	return exitUsage
 }

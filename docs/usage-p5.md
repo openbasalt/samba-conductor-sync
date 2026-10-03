@@ -1,4 +1,4 @@
-# conductor-sync: operator guide (P5, P5b)
+# conductor-sync: operator guide (P5, P5b, P5c)
 
 From an empty host to scheduled provisioning AD -> Google Workspace. No
 secret appears in this document; replace `example.com` with your domains.
@@ -274,8 +274,9 @@ conductor-sync through its local management API, `conductor-sync serve`:
 Settings edited in conductor are stored in the state database and override
 the configuration file's sync settings (mode, `[source]` scope keys,
 `[mapping]`, `[policy]`, `[limits]`, `google.customer`, `admin_subject`,
-`member_role`, `schedule.interval`). Host settings stay in the file. From
-the command line:
+`member_role`, `schedule.interval`) and, since P5c, the connection settings
+(§14). Host settings (state directory, credential names, `[api]`, the
+Google API endpoints) stay in the file. From the command line:
 
 | Command | Does |
 |---|---|
@@ -283,6 +284,9 @@ the command line:
 | `cs config history` | the stored versions: who, when, how many changes |
 | `cs config import [FILE]` | make the sync settings of FILE (default: the configuration file) the newest version |
 | `cs key set FILE` / `cs key show` | store the service account key encrypted / show its e-mail and key ID |
+| `cs secret status` | each secret: configured or not, from the database or a credential file, when and by whom (never a value) |
+| `cs secret set ad-bind-password` / `alert-webhook-secret` | store the value read from stdin, encrypted |
+| `cs secret remove NAME` | drop a stored secret (the credential file, if any, is used again); `google-key` for the key |
 | `cs serve` | the management API (normally started by the socket unit) |
 | `cs check-config` | also says whether the sync settings come from the file or from a stored version |
 
@@ -301,3 +305,46 @@ Upgrading from P5: the service unit now loads `state-key` instead of
 `google.key_credential = "google-sa"` and add its `LoadCredential=` line
 back to the units.
 
+
+## 14. Connection settings and secrets from conductor (P5c)
+
+conductor's Google Workspace sync > Settings > Connection page edits how
+conductor-sync reaches AD and Google, the ownership marker and the alert
+webhook, and replaces or removes the secrets. Decisions 38-43 in
+[`decisions.md`](decisions.md).
+
+- Editable: `[source]` realm, dcs, preferred, dns_servers, the CA content
+  (`ca_pem`, pasted or uploaded; it wins over `ca_file`, and "use the host's
+  CA file" goes back to the file), bind_user, auth; `[google]` customer,
+  admin_subject, requests_per_second, max_retries, timeout, marker;
+  `alert.webhook_url`. They are stored as settings versions like the sync
+  settings. A version stored before P5c keeps the file's connection values
+  until a new version is saved; `check-config` prints where they come from.
+- Every change is a draft, tested (a sign-in to AD with the pinned CA and a
+  read of the admin subject on Google with the stored key) before conductor
+  offers to save it, previewed (every changed setting; the CA as a count and
+  a short SHA-256), confirmed with the password and a fresh second factor,
+  and audited in both audit logs. conductor-sync signs in to AD again with
+  the new values before it stores an AD change.
+- The ownership marker has its own form: a strong warning and the typed
+  confirmation `change marker to <new marker>`, which conductor-sync checks
+  too. Accounts carrying the previous marker are no longer recognized as the
+  sync's own.
+- Secrets are write only: the AD bind password, the Google service account
+  key and the webhook HMAC secret. Pages and the API show whether each one
+  is configured, from where (stored encrypted, or the credential file named
+  in the configuration), when and by whom; never a value. A new bind
+  password is stored only after a sign-in to AD with it. A stored secret wins
+  over the credential file; removing it falls back to the file. The audit
+  records the secret's name and `set`, `replaced` or `removed`.
+- Rollback: Settings > history > "Roll back to this version" stores the
+  settings of that version as a new version, after a preview and
+  re-authentication (and the typed confirmation if the marker changes).
+  Secrets are not versioned.
+- The configuration file stays the bootstrap; `config export` renders the
+  effective settings (the CA inline included, never a secret) and `config
+  import` makes the file's settings the newest version.
+
+Upgrading from P5b: the protocol version is 2; upgrade conductor and
+conductor-sync together. Nothing else changes until a connection setting is
+saved from conductor.

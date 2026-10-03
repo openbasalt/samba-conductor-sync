@@ -57,6 +57,7 @@ conductor-sync check-config
 conductor-sync serve
 conductor-sync config export | import [FILE] | history
 conductor-sync key set FILE | show
+conductor-sync secret status | set NAME | remove NAME
 ```
 
 Operator guide: [`docs/usage-p5.md`](docs/usage-p5.md) (§13: the
@@ -74,7 +75,7 @@ management API and conductor's sync section). Mapping reference:
 | `syncapi` | the management API protocol and client (the only package conductor imports) |
 | `internal/api` | the management API server: socket, peer check, operations, background jobs, in-process scheduler |
 | `internal/app` | wiring shared by the CLI and the API: effective configuration, stored key, engines |
-| `internal/secretbox` | AES-256-GCM for secrets at rest (the Google key) |
+| `internal/secretbox` | AES-256-GCM for secrets at rest (the Google key, the AD bind password, the webhook secret) |
 | `internal/engine` | plan and apply runs: limits, confirmation, journal, resume, delete |
 | `internal/plan` | the diff: operations, warnings, digest, safety limits |
 | `internal/model` | connector-agnostic users, groups, members |
@@ -107,7 +108,10 @@ scripts under the prefix `conductor-synclab`, network `10.95.0.0/24`, domain
 P5 (2026-10-02): engine, Google connector, CLI, systemd units, tests (unit,
 fake API, Samba AD lab end to end). P5b (2026-10-03): scope and org unit
 placement by AD group, the management API, and the "Google Workspace sync"
-section of conductor (<https://github.com/openbasalt/samba-conductor/blob/main/docs/usage-p5b.md>). Not yet tested
+section of conductor (<https://github.com/openbasalt/samba-conductor/blob/main/docs/usage-p5b.md>). P5c
+(2026-10-03): the connection settings (AD, Google client tuning, ownership
+marker, alert webhook) editable through the API, write-only secrets, settings
+rollback (`docs/usage-p5.md` §14). Not yet tested
 against a real Google Workspace (read-only check pending a test tenant).
 
 License: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)).

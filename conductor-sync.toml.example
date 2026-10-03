@@ -6,14 +6,19 @@
 # credentials_dir (files 0600, owned by the conductor-sync user).
 # Guide: docs/usage-p5.md; mapping reference: docs/mapping.md.
 #
-# Host settings (state, credentials, how AD and Google are reached, the
-# ownership marker, alerts, [api]) live only here. Sync settings (mode,
-# scope, mapping, policy, limits, google.customer/admin_subject/member_role,
-# schedule.interval) can also be edited in conductor's "Google Workspace
-# sync" section: each edit is stored as a version in the state database and
-# then overrides this file's values for those keys (`conductor-sync config
-# export` shows the effective configuration, `config import` makes this
-# file's sync settings the newest version again).
+# Host settings (state, credential names, the Google API endpoints and their
+# CA, the CA file path, [api]) live only here. Sync settings (mode, scope,
+# mapping, policy, limits, google.customer/admin_subject/member_role,
+# schedule.interval) and connection settings (source realm, dcs, preferred,
+# dns_servers, ca_pem, bind_user, auth; google requests_per_second,
+# max_retries, timeout, marker; alert.webhook_url) can also be edited in
+# conductor's "Google Workspace sync" section: each edit is stored as a
+# version in the state database and then overrides this file's values for
+# those keys (`conductor-sync config export` shows the effective
+# configuration, `config import` makes this file's settings the newest
+# version again). Secrets set there (the AD bind password, the service
+# account key, the webhook secret) are stored encrypted and win over the
+# credential files named here.
 
 # "dry-run" plans only (the default for a new installation). Switch to
 # "apply" after reviewing the first plan; the first apply is always manual.
@@ -34,11 +39,13 @@ dcs = []
 preferred = ["dc1.example.com"]
 dns_servers = []
 ca_file = "/etc/conductor-sync/domain-ca.pem"
+# ca_pem = """-----BEGIN CERTIFICATE-----..."""   # the CA inline (wins over ca_file)
 # A dedicated, unprivileged account: Domain Users can read everything the
 # sync needs. Never use an administrator.
 bind_user = "svc.sync"
 auth = "kerberos"                 # or "simple" (LDAP simple bind over TLS)
 password_credential = "ad-bind"   # systemd credential name or absolute 0600 path
+                                  # (optional when the password is stored through conductor)
 user_bases = ["OU=People,DC=example,DC=com"]
 group_bases = ["OU=Google Groups,DC=example,DC=com"]
 exclude_bases = ["OU=Service Accounts,OU=People,DC=example,DC=com"]
@@ -120,6 +127,7 @@ admin_subject = "sync-admin@example.com"
 # credential file instead:
 # key_credential = "google-sa"
 # Ownership marker (externalIds customType); one per sync instance and tenant.
+# Changing it orphans the accounts marked with the previous value.
 marker = "conductor-sync"
 requests_per_second = 5
 max_retries = 6

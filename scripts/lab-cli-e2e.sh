@@ -25,8 +25,10 @@ install -d -m 0700 "$W" "$W/creds" "$W/fake" "$W/state"
 (umask 077; sed -n 's/^SYNC_BIND_PASSWORD=//p' "$STATE/sync-secrets.env" >"$W/creds/ad-bind")
 
 FAKE_PID=""
+SERVE_PID=""
 cleanup() {
   [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null || true
+  [ -n "$SERVE_PID" ] && kill "$SERVE_PID" 2>/dev/null || true
   rm -rf "$W"
 }
 trap cleanup EXIT
@@ -204,7 +206,7 @@ api() { python3 - "$W/api.sock" "$@" <<'PY'
 import json, socket, sys, uuid
 sock, op = sys.argv[1], sys.argv[2]
 params = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
-req = {"version": 1, "id": uuid.uuid4().hex[:16], "op": op, "params": params, "sent_at": "2026-10-03T00:00:00Z",
+req = {"version": 2, "id": uuid.uuid4().hex[:16], "op": op, "params": params, "sent_at": "2026-10-03T00:00:00Z",
        "actor": {"user": "lab.admin", "sid": "S-1-5-21-1-2-3-1104", "session": "cli-e2e", "ip": "127.0.0.1"}}
 s = socket.socket(socket.AF_UNIX); s.connect(sock)
 s.sendall((json.dumps(req) + "\n").encode())
@@ -240,6 +242,55 @@ jq_ 'd["groups"][0]["name"] == "All Staff" and d["groups"][0]["members"] >= 2400
 api apply.start '{"scheduled": true}' | jq_ 'd["job"]["kind"]' | grep -q scheduled || fail "run now"
 expect 0 cs config history
 grep -q 'conductor:lab.admin@127.0.0.1' "$W/out.txt" || fail "config history actor"
+
+say "P5c: connection settings and write-only secrets through the API"
+# Wait for the scheduled-style run to release the run lock.
+for _ in $(seq 1 240); do
+  api status | jq_ 'd.get("job") is None or d["job"]["state"] != "running"' | grep -q True && break; sleep 0.5
+done
+BINDPW="$(cat "$W/creds/ad-bind")"
+pyjson() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
+# A wrong bind password is refused (AD sign-in), the right one stored.
+api secret.set "{\"name\": \"ad_bind_password\", \"value\": $(pyjson "${BINDPW}-wrong")}" >"$W/secret.json" && fail "wrong bind password stored"
+grep -q 'could not sign in' "$W/secret.json" || { cat "$W/secret.json"; fail "wrong password reason"; }
+api secret.set "{\"name\": \"ad_bind_password\", \"value\": $(pyjson "$BINDPW")}" | jq_ 'd["configured"] and d["source"] == "database"' | grep -q True || fail "bind password stored"
+api secret.set '{"name": "alert_webhook_secret", "value": "lab-webhook-hmac-0123456789"}' | jq_ 'd["configured"]' | grep -q True || fail "webhook secret"
+# The credential file is no longer needed.
+rm -f "$W/creds/ad-bind"
+expect 0 cs check-config
+grep -q 'secret ad_bind_password: configured (database)' "$W/out.txt" || fail "check-config secret source"
+# The CA inline and the DC list, saved after a real sign-in; an unknown DC is refused.
+CFG="$(api config.get)"
+echo "$CFG" | jq_ 'd["secrets"][0]["configured"] and d["secrets"][0]["source"] == "database" and d["host"]["connection_stored"]' | grep -q True || fail "config.get secrets"
+# (STATE was reused for the job state above: the lab state is $ROOT/state.)
+CA="$(cat "$ROOT/state/ca.pem")"
+SETTINGS="$(echo "$CFG" | python3 -c 'import json,sys; s=json.load(sys.stdin)["settings"]; s["connection"]["ad"]["dcs"]=["dc9.sync.conductor.test"]; print(json.dumps(s))')"
+api config.update "{\"base_version\": 1, \"settings\": $SETTINGS}" >"$W/bad.json" && fail "unknown DC saved"
+grep -q 'could not sign in' "$W/bad.json" || { cat "$W/bad.json"; fail "unknown DC reason"; }
+SETTINGS="$(echo "$CFG" | CA="$CA" python3 -c 'import json,os,sys; s=json.load(sys.stdin)["settings"]; s["connection"]["ad"]["ca_pem"]=os.environ["CA"]; s["connection"]["ad"]["auth"]="kerberos"; print(json.dumps(s))')"
+api config.update "{\"base_version\": 1, \"settings\": $SETTINGS, \"comment\": \"inline CA\"}" | jq_ 'd["version"]' | grep -q '^2$' || fail "connection update"
+# The marker needs its typed confirmation.
+SETTINGS="$(api config.get | python3 -c 'import json,sys; s=json.load(sys.stdin)["settings"]; s["connection"]["marker"]="conductor-sync-lab2"; print(json.dumps(s))')"
+api config.update "{\"base_version\": 2, \"settings\": $SETTINGS}" >"$W/marker.json" && fail "marker changed without confirmation"
+api config.update "{\"base_version\": 2, \"settings\": $SETTINGS, \"marker_confirmation\": \"change marker to conductor-sync-lab2\"}" | jq_ 'd["version"]' | grep -q '^3$' || fail "marker change"
+# Rollback to version 2 (marker back, confirmed).
+api config.rollback '{"base_version": 3, "version": 2, "comment": "undo marker", "marker_confirmation": "change marker to conductor-sync"}' | jq_ 'd["version"]' | grep -q '^4$' || fail "rollback"
+api config.get | jq_ 'd["settings"]["connection"]["marker"] == "conductor-sync" and d["host"]["connection_stored"]' | grep -q True || fail "after rollback"
+# The new settings work end to end: a plan reads AD with the stored password and the inline CA.
+JOB="$(api plan.start | jq_ 'd["job"]["id"]')"
+for _ in $(seq 1 120); do
+  STATE2="$(api job.get "{\"id\": \"$JOB\"}" | jq_ 'd["state"]')"
+  [ "$STATE2" = running ] || break; sleep 0.5
+done
+[ "$STATE2" = done ] || fail "plan with the stored connection: $STATE2"
+# No secret value anywhere.
+expect 0 cs config export
+grep -q 'BEGIN CERTIFICATE' "$W/out.txt" || fail "export lacks the inline CA"
+for f in "$W/out.txt" "$W/serve.log"; do grep -qF -- "$BINDPW" "$f" && fail "bind password in $f"; done
+cs audit export >"$W/audit.jsonl"
+grep -qF -- "$BINDPW" "$W/audit.jsonl" && fail "bind password in the audit"
+grep -q 'lab-webhook-hmac' "$W/audit.jsonl" && fail "webhook secret in the audit"
+grep -q 'secret ad_bind_password: set' "$W/audit.jsonl" || fail "audit of the secret"
 expect 0 cs audit verify
 kill "$SERVE_PID"; wait "$SERVE_PID" 2>/dev/null || true
 grep -q 'management API listening' "$W/serve.log" || fail "serve log"

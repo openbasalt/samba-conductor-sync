@@ -47,10 +47,16 @@ Run the local management API used by conductor's web interface (started by
 .BR conductor-sync-api.socket ).
 .TP
 .B config export | import | history
-The sync settings.
+The sync and connection settings (versions; export never includes a secret).
 .TP
 .B key set | key show
 The Google service account key (stored encrypted).
+.TP
+.B secret status | set NAME | remove NAME
+The AD bind password (\fBad-bind-password\fR) and the alert webhook secret
+(\fBalert-webhook-secret\fR), stored encrypted; the value is read from
+standard input, never from the command line. \fBremove google-key\fR removes
+the stored service account key.
 .TP
 .B version
 Print the version.
@@ -64,9 +70,9 @@ refused), 6 manual apply in dry-run mode.
 Configuration.
 .TP
 .I /etc/conductor-sync/credentials/
-.B ad-bind
-and
-.BR state-key ,
+.B state-key
+(and, unless stored encrypted in the state database,
+.BR ad-bind ),
 loaded by systemd.
 .TP
 .I /var/lib/conductor-sync/

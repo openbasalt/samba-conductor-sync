@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,14 +19,18 @@ import (
 )
 
 // The configuration has two parts. Host settings (state directory,
-// credentials, how AD and Google are reached, the ownership marker,
-// alerts, the API socket) live only in the file. Sync settings (mode,
-// scope, mapping, policy, limits, the tenant's admin subject, schedule) can
-// also be edited through the management API: each edit is validated and
-// stored as a new version in the state database, and the newest stored
-// version overrides the file's values for those keys. The file is the
-// bootstrap, and Export renders the effective configuration in the same
-// format.
+// credential names, the API socket, the Google API endpoints and their CA,
+// the CA file path) live only in the file. Sync settings (mode, scope,
+// mapping, policy, limits, the tenant's customer and admin subject,
+// schedule) and, since P5c, the connection settings (the AD realm, DCs,
+// DNS servers, CA content, bind user and authentication; the Google client
+// tuning; the ownership marker; the alert webhook URL) can also be edited
+// through the management API: each edit is validated and stored as a new
+// version in the state database, and the newest stored version overrides
+// the file's values for those keys. A version stored before P5c has no
+// connection settings and keeps the file's. The file is the bootstrap, and
+// Export renders the effective configuration in the same format. Secrets
+// are never part of a version.
 
 // SettingsOf extracts the sync settings, with defaults made explicit.
 func SettingsOf(c *Config) syncapi.Settings {
@@ -58,9 +65,130 @@ func SettingsOf(c *Config) syncapi.Settings {
 			MaxUpdates: l.MaxUpdates, MaxGroupChanges: l.MaxGroupChanges, MaxMembershipChanges: l.MaxMembershipChanges,
 			MaxTouchedPercent: l.MaxTouchedPercent, MinSourceUsers: l.MinSourceUsers, MaxSourceDropPercent: l.MaxSourceDropPercent,
 		},
-		Google:   syncapi.GoogleSettings{Customer: c.Google.Customer, AdminSubject: c.Google.AdminSubject, MemberRole: c.Google.MemberRole},
-		Schedule: syncapi.ScheduleSettings{Interval: c.Schedule.Interval.Duration.String()},
+		Google:     syncapi.GoogleSettings{Customer: c.Google.Customer, AdminSubject: c.Google.AdminSubject, MemberRole: c.Google.MemberRole},
+		Schedule:   syncapi.ScheduleSettings{Interval: c.Schedule.Interval.Duration.String()},
+		Connection: ConnectionOf(c),
 	}
+}
+
+// ConnectionOf extracts the connection settings.
+func ConnectionOf(c *Config) *syncapi.ConnectionSettings {
+	src := c.Source
+	auth := src.Auth
+	if auth == "" {
+		auth = "kerberos"
+	}
+	return &syncapi.ConnectionSettings{
+		AD: syncapi.ADConnection{Realm: src.Realm, DCs: clone(src.DCs), Preferred: clone(src.Preferred), DNSServers: clone(src.DNSServers),
+			CAPEM: src.CAPEM, CAFile: src.CAFile, BindUser: src.BindUser, Auth: auth},
+		Google: syncapi.GoogleConnection{RequestsPerSecond: c.Google.RequestsPerSecond, MaxRetries: c.Google.MaxRetries,
+			Timeout: c.Google.Timeout.Duration.String()},
+		Marker: c.Google.Marker,
+		Alert:  syncapi.AlertConnection{WebhookURL: c.Alert.WebhookURL},
+	}
+}
+
+// ADConnectionChanged reports whether the way AD is reached differs (a
+// change that is saved only after a successful sign-in).
+func ADConnectionChanged(a, b *Config) bool {
+	x, y := a.Source, b.Source
+	return x.Realm != y.Realm || !slices.Equal(x.DCs, y.DCs) || !slices.Equal(x.Preferred, y.Preferred) ||
+		!slices.Equal(x.DNSServers, y.DNSServers) || x.CAPEM != y.CAPEM || x.CAFile != y.CAFile ||
+		x.BindUser != y.BindUser || authOf(x.Auth) != authOf(y.Auth)
+}
+
+func authOf(a string) string {
+	if a == "" {
+		return "kerberos"
+	}
+	return a
+}
+
+// GoogleConnectionChanged reports whether the tenant or the client tuning
+// differs.
+func GoogleConnectionChanged(a, b *Config) bool {
+	x, y := a.Google, b.Google
+	return x.Customer != y.Customer || x.AdminSubject != y.AdminSubject || x.RequestsPerSecond != y.RequestsPerSecond ||
+		x.MaxRetries != y.MaxRetries || x.Timeout != y.Timeout
+}
+
+var (
+	realmRE  = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,62}\.)*[A-Za-z0-9-]{1,63}$`)
+	hostRE   = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,62})(\.[A-Za-z0-9-]{1,63})*\.?$`)
+	markerRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	userRE   = regexp.MustCompile(`^[^\x00-\x1f\x7f]{1,256}$`)
+)
+
+// overlayConnection applies the connection settings to n, validating what
+// the file loader does not (host names, DNS servers, bounds).
+func overlayConnection(n *Config, cs *syncapi.ConnectionSettings) []error {
+	var errs []error
+	a := cs.AD
+	n.Source.Realm = strings.ToUpper(strings.TrimSpace(a.Realm))
+	if !realmRE.MatchString(n.Source.Realm) || len(n.Source.Realm) > 253 {
+		errs = append(errs, fmt.Errorf("source.realm %q: a DNS domain name", a.Realm))
+	}
+	hosts := func(name string, in []string) []string {
+		out := trimList(in)
+		for _, h := range out {
+			if net.ParseIP(h) == nil && (!hostRE.MatchString(h) || len(h) > 253) {
+				errs = append(errs, fmt.Errorf("source.%s: %q is not a host name or IP address", name, h))
+			}
+		}
+		return out
+	}
+	n.Source.DCs = hosts("dcs", a.DCs)
+	n.Source.Preferred = hosts("preferred", a.Preferred)
+	n.Source.DNSServers = trimList(a.DNSServers)
+	for _, d := range n.Source.DNSServers {
+		host := d
+		if h, port, err := net.SplitHostPort(d); err == nil {
+			if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
+				errs = append(errs, fmt.Errorf("source.dns_servers: %q has an invalid port", d))
+			}
+			host = h
+		}
+		if net.ParseIP(host) == nil {
+			errs = append(errs, fmt.Errorf("source.dns_servers: %q is not an IP address (with an optional port)", d))
+		}
+	}
+	if len(n.Source.DCs)+len(n.Source.Preferred)+len(n.Source.DNSServers) > 32 {
+		errs = append(errs, errors.New("source: at most 32 DCs, preferred DCs and DNS servers"))
+	}
+	n.Source.CAPEM = strings.TrimSpace(strings.ReplaceAll(a.CAPEM, "\r\n", "\n"))
+	if n.Source.CAPEM != "" {
+		n.Source.CAPEM += "\n"
+	}
+	n.Source.BindUser = strings.TrimSpace(a.BindUser)
+	if !userRE.MatchString(n.Source.BindUser) {
+		errs = append(errs, fmt.Errorf("source.bind_user %q: a logon name, user@REALM or a DN", a.BindUser))
+	}
+	n.Source.Auth = strings.TrimSpace(a.Auth)
+	g := cs.Google
+	if g.RequestsPerSecond <= 0 || g.RequestsPerSecond > 10000 {
+		errs = append(errs, fmt.Errorf("google.requests_per_second %g: more than 0, at most 10000", g.RequestsPerSecond))
+	}
+	n.Google.RequestsPerSecond = g.RequestsPerSecond
+	if g.MaxRetries < 0 || g.MaxRetries > 20 {
+		errs = append(errs, fmt.Errorf("google.max_retries %d: 0-20", g.MaxRetries))
+	}
+	n.Google.MaxRetries = g.MaxRetries
+	if t := strings.TrimSpace(g.Timeout); t != "" {
+		d, err := time.ParseDuration(t)
+		if err != nil || d < 5*time.Second || d > 10*time.Minute {
+			errs = append(errs, fmt.Errorf("google.timeout %q: a duration between 5s and 10m", t))
+		}
+		n.Google.Timeout.Duration = d
+	} else {
+		n.Google.Timeout.Duration = 0
+	}
+	n.Google.Marker = strings.TrimSpace(cs.Marker)
+	if !markerRE.MatchString(n.Google.Marker) {
+		errs = append(errs, fmt.Errorf("google.marker %q: 1-64 letters, digits, dots, dashes or underscores", cs.Marker))
+	}
+	n.Alert.WebhookURL = strings.TrimSpace(cs.Alert.WebhookURL)
+	n.ConnectionStored = true
+	return errs
 }
 
 func clone(s []string) []string {
@@ -122,6 +250,10 @@ func (c *Config) Overlay(s syncapi.Settings, version int64) (*Config, error) {
 	n.Google.AdminSubject = strings.TrimSpace(s.Google.AdminSubject)
 	n.Google.MemberRole = strings.TrimSpace(s.Google.MemberRole)
 	var errs []error
+	n.ConnectionStored = false
+	if s.Connection != nil {
+		errs = append(errs, overlayConnection(&n, s.Connection)...)
+	}
 	if iv := strings.TrimSpace(s.Schedule.Interval); iv != "" {
 		d, err := time.ParseDuration(iv)
 		if err != nil {

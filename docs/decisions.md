@@ -221,3 +221,58 @@ Implementation agent; to be reviewed by the owner.
 
 The remaining helpers listed above are still local; the group-scope work
 needed none of them.
+
+## P5c: connection settings and write-only secrets in the web UI (2026-10-03)
+
+Owner decision (2026-10-03): the connection settings that decision 33 kept
+file-only become editable through the management API (and conductor's
+Settings > Connection page), with more safeguards than the sync settings.
+
+38. **Connection settings join the versioned settings.** `Settings.connection`
+    holds the AD realm, DCs, preferred DCs, DNS servers, the CA content
+    (`source.ca_pem`, which wins over `ca_file`), the bind user and the
+    authentication; the Google client tuning (`requests_per_second`,
+    `max_retries`, `timeout`); the ownership marker; the alert webhook URL.
+    `google.customer` and `admin_subject` were already editable. A version
+    stored before P5c has no `connection` and keeps the file's values; from
+    the first P5c version on, the stored values are in force (`config
+    import` makes the file's the newest version again, `check-config` says
+    where they come from). Still file-only: the state directory, the
+    credential names, `[api]`, `google.api_base_url`/`token_url`/`ca_file`
+    and the CA file path: they decide where state and credentials live and
+    which Google endpoint gets the key, and only exist for tests and proxies.
+    Supersedes the "host settings stay file-only" part of decision 33 for
+    these keys.
+39. **An AD connection change is saved only after a sign-in with it.**
+    `config.update` and `config.rollback` that change how AD is reached (or
+    carry a new bind password) run a sign-in (TLS with the pinned CA, then
+    the bind) with the new values first and store nothing if it fails.
+    conductor additionally requires a successful connection test of exactly
+    the draft it saves (AD and/or Google, whichever part changed). Google
+    changes are not re-tested by conductor-sync itself: the setup wizard
+    sets the admin subject before the key may exist.
+40. **The ownership marker needs a typed confirmation**,
+    `change marker to <new marker>`, checked by conductor-sync on update and
+    rollback (and by conductor, which shows a strong warning): accounts
+    marked with the previous value are no longer recognized as owned.
+41. **Secrets are write only.** The AD bind password and the webhook HMAC
+    secret join the Google key in the encrypted `secrets` table
+    (AES-256-GCM, state key, the secret's name as additional data):
+    `secret.set` (the bind password only after a sign-in with it),
+    `secret.remove`, and `ad_password` on `config.update` for a new bind
+    account (stored in the same transaction as the version). Results and
+    `config.get` carry only the state (configured, source database or
+    credential file, the credential name, when and by whom); never a value
+    or a fingerprint. The audit records `secret <name>: set|replaced|removed`.
+    A stored secret wins over the credential file; removing it falls back to
+    the file. `connection.test` accepts a bind password that is used for the
+    test only.
+42. **Rollback = a new version with an earlier version's settings**
+    (`config.rollback`, origin `rollback`, the source version in the audit),
+    with the same checks as an update. Secrets are not versioned and are not
+    touched by a rollback.
+43. **Protocol version 2.** Results are decoded strictly (unknown fields
+    rejected), so the new fields make P5b clients incompatible; the version
+    bump turns that into a clear `version` error. conductor and
+    conductor-sync are upgraded together (the lab snapshot conductor-p2b now
+    reinstalls both).

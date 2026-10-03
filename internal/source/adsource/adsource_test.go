@@ -95,3 +95,21 @@ func TestScopeValidation(t *testing.T) {
 		t.Fatalf("alias duplicates an include group: %v", inc)
 	}
 }
+
+func TestParseCAPEM(t *testing.T) {
+	for _, bad := range []string{"", "not pem", "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+		"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n", strings.Repeat("x", MaxCAPEM+1)} {
+		if _, err := ParseCAPEM(bad); err == nil {
+			t.Errorf("accepted %.30q", bad)
+		}
+	}
+	c := Config{Realm: "R", CAPEM: "garbage", BindUser: "u", UserBases: []string{"OU=P,DC=x"}}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "ca_pem") {
+		t.Fatalf("validate: %v", err)
+	}
+	// No password credential is needed (the password may be stored).
+	c.CAPEM, c.CAFile = "", "/ca.pem"
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

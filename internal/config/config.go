@@ -1,7 +1,8 @@
 // Package config loads /etc/conductor-sync/conductor-sync.toml. The file
 // holds no secret: the AD bind password, the Google service account key and
 // the webhook secret are named credentials (systemd LoadCredential= or a
-// 0600 file).
+// 0600 file), or are stored encrypted in the state database through the
+// management API (which wins over the credential files).
 package config
 
 import (
@@ -97,7 +98,25 @@ type Config struct {
 	// SettingsVersion is the stored settings version overlaid on the
 	// file (0: the file's own settings).
 	SettingsVersion int64 `toml:"-"`
+	// ConnectionStored is set when the connection settings come from the
+	// stored version, not from the file.
+	ConnectionStored bool `toml:"-"`
+
+	// adPassword replaces the AD bind password for one connection test
+	// (never stored, never exported).
+	adPassword string
 }
+
+// WithADPassword returns a copy of c whose AD source signs in with pw (a
+// connection test of a password that is not stored yet).
+func (c *Config) WithADPassword(pw string) *Config {
+	n := *c
+	n.adPassword = pw
+	return &n
+}
+
+// ADPasswordOverride is the password set by WithADPassword ("" = none).
+func (c *Config) ADPasswordOverride() string { return c.adPassword }
 
 // Load reads, defaults and validates a configuration file.
 func Load(path string) (*Config, error) {

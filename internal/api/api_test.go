@@ -32,6 +32,23 @@ import (
 type fakeSource struct {
 	mu  sync.Mutex
 	res source.Result
+	// pingErr fails the AD sign-in; pings counts them; lastCfg and
+	// lastPassword are the configuration (and password override) of the
+	// last source built.
+	pingErr      error
+	pings        int
+	lastCfg      *config.Config
+	lastPassword string
+}
+
+func (f *fakeSource) Ping(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pings++
+	if f.pingErr != nil {
+		return "", f.pingErr
+	}
+	return "connected to dc1 as " + f.lastCfg.Source.BindUser, nil
 }
 
 func (f *fakeSource) Read(context.Context) (*source.Result, error) {
@@ -102,7 +119,7 @@ allowed_domains = ["example.com"]
 [google]
 admin_subject = "admin@example.com"
 api_base_url = "%[2]s"
-requests_per_second = 100000
+requests_per_second = 10000
 [api]
 allowed_uids = [%[3]d]
 `
@@ -136,7 +153,12 @@ func newTEnv(t *testing.T) *tenv {
 	t.Cleanup(func() { _ = rt.Close(); secret.FallbackDir = "/etc/conductor-sync/credentials" })
 	src := &fakeSource{}
 	src.set(60)
-	rt.NewSource = func(*config.Config) app.Source { return src }
+	rt.NewSource = func(c *config.Config) app.Source {
+		src.mu.Lock()
+		src.lastCfg, src.lastPassword = c, c.ADPasswordOverride()
+		src.mu.Unlock()
+		return src
+	}
 	rt.Connect = func(gc google.Config, key *google.ServiceAccountKey, write bool) (connector.Connector, error) {
 		return google.New(gc, key, write, google.Options{HTTPClient: hs.Client(), Backoff: time.Millisecond, MaxBackoff: 4 * time.Millisecond})
 	}
@@ -402,14 +424,18 @@ func TestBusyAndDryRun(t *testing.T) {
 func TestRequestValidation(t *testing.T) {
 	e := newTEnv(t)
 	cases := []syncapi.Request{
-		{Version: 2, ID: "abcdefgh", Op: syncapi.OpStatus, Actor: actor},
-		{Version: 1, ID: "short", Op: syncapi.OpStatus, Actor: actor},
-		{Version: 1, ID: "abcdefgh", Op: "shell.exec", Actor: actor},
-		{Version: 1, ID: "abcdefgh", Op: syncapi.OpStatus, Actor: syncapi.Actor{User: "x", SID: "bogus", Session: "s"}},
-		{Version: 1, ID: "abcdefgh", Op: syncapi.OpStatus, Actor: syncapi.Actor{SID: actor.SID, Session: "s"}},
-		{Version: 1, ID: "abcdefgh", Op: syncapi.OpRunGet, Actor: actor, Params: json.RawMessage(`{"id":1,"rm":"-rf"}`)},
-		{Version: 1, ID: "abcdefgh", Op: syncapi.OpApplyStart, Actor: actor, Params: json.RawMessage(`{"scheduled":true,"override_limits":true}`)},
-		{Version: 1, ID: "abcdefgh", Op: syncapi.OpApplyStart, Actor: actor, Params: json.RawMessage(`{"run_id":3}`)},
+		{Version: 1, ID: "abcdefgh", Op: syncapi.OpStatus, Actor: actor},
+		{Version: 2, ID: "short", Op: syncapi.OpStatus, Actor: actor},
+		{Version: 2, ID: "abcdefgh", Op: "shell.exec", Actor: actor},
+		{Version: 2, ID: "abcdefgh", Op: syncapi.OpStatus, Actor: syncapi.Actor{User: "x", SID: "bogus", Session: "s"}},
+		{Version: 2, ID: "abcdefgh", Op: syncapi.OpStatus, Actor: syncapi.Actor{SID: actor.SID, Session: "s"}},
+		{Version: 2, ID: "abcdefgh", Op: syncapi.OpRunGet, Actor: actor, Params: json.RawMessage(`{"id":1,"rm":"-rf"}`)},
+		{Version: 2, ID: "abcdefgh", Op: syncapi.OpApplyStart, Actor: actor, Params: json.RawMessage(`{"scheduled":true,"override_limits":true}`)},
+		{Version: 2, ID: "abcdefgh", Op: syncapi.OpApplyStart, Actor: actor, Params: json.RawMessage(`{"run_id":3}`)},
+		{Version: 2, ID: "abcdefgh", Op: syncapi.OpSecretSet, Actor: actor, Params: json.RawMessage(`{"name":"google_service_account_key","value":"x"}`)},
+		{Version: 2, ID: "abcdefgh", Op: syncapi.OpSecretSet, Actor: actor, Params: json.RawMessage(`{"name":"alert_webhook_secret","value":"short"}`)},
+		{Version: 2, ID: "abcdefgh", Op: syncapi.OpSecretSet, Actor: actor, Params: json.RawMessage(`{"name":"ad_bind_password","value":"a\nb"}`)},
+		{Version: 2, ID: "abcdefgh", Op: syncapi.OpSecretRemove, Actor: actor, Params: json.RawMessage(`{"name":"shadow"}`)},
 	}
 	for i, req := range cases {
 		if resp := e.srv.Handle(context.Background(), req); resp.OK {

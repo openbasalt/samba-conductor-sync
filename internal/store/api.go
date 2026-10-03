@@ -52,7 +52,8 @@ func (s *Store) LatestConfig(ctx context.Context) (*ConfigVersion, error) {
 
 // SaveConfig stores a new version. base must be the newest version's ID
 // (0 when none is stored): a concurrent edit makes it ErrStaleVersion.
-func (s *Store) SaveConfig(ctx context.Context, base int64, actor, origin, comment string, settings, changes []byte) (int64, error) {
+// Secrets given are stored (replaced) in the same transaction.
+func (s *Store) SaveConfig(ctx context.Context, base int64, actor, origin, comment string, settings, changes []byte, secrets ...SecretRow) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -78,7 +79,24 @@ func (s *Store) SaveConfig(ctx context.Context, base int64, actor, origin, comme
 	if err != nil {
 		return 0, err
 	}
+	for _, r := range secrets {
+		if err := putSecret(ctx, tx, r, s.now()); err != nil {
+			return 0, err
+		}
+	}
 	return id, tx.Commit()
+}
+
+// GetConfig returns one stored version (nil when absent).
+func (s *Store) GetConfig(ctx context.Context, id int64) (*ConfigVersion, error) {
+	v, err := scanConfig(s.db.QueryRowContext(ctx, `SELECT `+cfgCols+` FROM config_versions WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
 }
 
 // ConfigHistory returns the newest versions first.
@@ -116,15 +134,33 @@ type SecretRow struct {
 
 // PutSecret stores (or replaces) an encrypted secret.
 func (s *Store) PutSecret(ctx context.Context, r SecretRow) error {
+	return putSecret(ctx, s.db, r, s.now())
+}
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func putSecret(ctx context.Context, db execer, r SecretRow, now time.Time) error {
 	meta := string(r.Meta)
 	if meta == "" {
 		meta = "{}"
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO secrets(name, nonce, ciphertext, meta_json, updated_at, actor) VALUES (?, ?, ?, ?, ?, ?)
+	_, err := db.ExecContext(ctx, `INSERT INTO secrets(name, nonce, ciphertext, meta_json, updated_at, actor) VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET nonce = excluded.nonce, ciphertext = excluded.ciphertext, meta_json = excluded.meta_json,
 			updated_at = excluded.updated_at, actor = excluded.actor`,
-		r.Name, r.Nonce, r.Ciphertext, meta, ts(s.now()), clip(r.Actor, 256))
+		r.Name, r.Nonce, r.Ciphertext, meta, ts(now), clip(r.Actor, 256))
 	return err
+}
+
+// DeleteSecret removes a stored secret; it reports whether one existed.
+func (s *Store) DeleteSecret(ctx context.Context, name string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM secrets WHERE name = ?`, name)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // GetSecret returns a stored secret (nil when absent).

@@ -9,10 +9,16 @@
 //   - every connection's peer is checked with SO_PEERCRED: only the
 //     configured UIDs (default: the conductor user) are served;
 //   - requests are typed and allowlisted, decoded strictly, size-bounded;
-//   - every mutation (settings, key, plan, apply) is written to the
-//     hash-chained audit log with the AD user conductor acted for;
-//   - the service account key is accepted (key.set), stored encrypted and
-//     never returned; only its client e-mail and key ID are shown.
+//   - every mutation (settings, rollback, key, secrets, plan, apply) is
+//     written to the hash-chained audit log with the AD user conductor
+//     acted for;
+//   - secrets (the service account key, the AD bind password, the webhook
+//     secret) are accepted, stored encrypted and never returned, logged or
+//     audited: only their state is shown (for the key, its client e-mail
+//     and key ID);
+//   - an AD connection change or a new bind password is stored only after
+//     a sign-in to AD with it; a marker change needs its typed
+//     confirmation.
 //
 // Plans and applies run as background jobs (one at a time, and the
 // engine's run lock still excludes the timer and the CLI); the client polls

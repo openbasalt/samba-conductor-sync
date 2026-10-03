@@ -13,8 +13,11 @@
 // rejected) and validated. Every request carries the acting AD user, which
 // the server writes to its hash-chained audit log for every mutation.
 //
-// Secrets: the only secret that crosses the socket is the Google service
-// account key, in one direction (key.set). It is never returned.
+// Secrets: the Google service account key (key.set), the AD bind password
+// (secret.set, config.update, connection.test) and the webhook HMAC secret
+// (secret.set) cross the socket in one direction only. They are never
+// returned, logged or audited: results and the audit log carry their name
+// and whether they are configured, never a value or a fingerprint.
 package syncapi
 
 import (
@@ -29,8 +32,10 @@ import (
 	"time"
 )
 
-// ProtocolVersion is bumped on incompatible changes.
-const ProtocolVersion = 1
+// ProtocolVersion is bumped on incompatible changes (2: P5c, editable
+// connection settings and write-only secrets; results are decoded
+// strictly, so conductor and conductor-sync are upgraded together).
+const ProtocolVersion = 2
 
 // DefaultSocketPath is where `conductor-sync serve` listens.
 const DefaultSocketPath = "/run/conductor-sync/api.sock"
@@ -50,7 +55,11 @@ const (
 	OpConfigUpdate   Op = "config.update"
 	OpConfigHistory  Op = "config.history"
 	OpConfigExport   Op = "config.export"
+	OpConfigVersion  Op = "config.version"
+	OpConfigRollback Op = "config.rollback"
 	OpKeySet         Op = "key.set"
+	OpSecretSet      Op = "secret.set"
+	OpSecretRemove   Op = "secret.remove"
 	OpConnectionTest Op = "connection.test"
 	OpMappingPreview Op = "mapping.preview"
 	OpPlanStart      Op = "plan.start"
@@ -65,7 +74,7 @@ const (
 // key, runs, the target directory). Mutations are audited with the actor.
 func (o Op) Mutating() bool {
 	switch o {
-	case OpConfigUpdate, OpKeySet, OpPlanStart, OpApplyStart:
+	case OpConfigUpdate, OpConfigRollback, OpKeySet, OpSecretSet, OpSecretRemove, OpPlanStart, OpApplyStart:
 		return true
 	}
 	return false
@@ -151,7 +160,11 @@ var Allowlist = map[Op]func() Params{
 	OpConfigUpdate:   func() Params { return &ConfigUpdateParams{} },
 	OpConfigHistory:  func() Params { return &ConfigHistoryParams{} },
 	OpConfigExport:   func() Params { return &NoParams{} },
+	OpConfigVersion:  func() Params { return &ConfigVersionParams{} },
+	OpConfigRollback: func() Params { return &ConfigRollbackParams{} },
 	OpKeySet:         func() Params { return &KeySetParams{} },
+	OpSecretSet:      func() Params { return &SecretSetParams{} },
+	OpSecretRemove:   func() Params { return &SecretRemoveParams{} },
 	OpConnectionTest: func() Params { return &ConnectionTestParams{} },
 	OpMappingPreview: func() Params { return &MappingPreviewParams{} },
 	OpPlanStart:      func() Params { return &NoParams{} },
@@ -284,10 +297,18 @@ func (ConfigValidateParams) Validate() error { return nil }
 
 // ConfigUpdateParams saves new settings as a new version. BaseVersion must
 // be the version the editor started from (optimistic concurrency).
+//
+// A change of the AD connection (realm, DCs, DNS servers, CA, bind user,
+// authentication) is saved only after conductor-sync has signed in to AD
+// with it; ADPassword (write only) replaces the stored bind password in
+// the same transaction, for a new bind account. A change of the ownership
+// marker needs MarkerConfirmation = MarkerConfirmation(new marker).
 type ConfigUpdateParams struct {
-	BaseVersion int64    `json:"base_version"`
-	Settings    Settings `json:"settings"`
-	Comment     string   `json:"comment,omitempty"`
+	BaseVersion        int64    `json:"base_version"`
+	Settings           Settings `json:"settings"`
+	Comment            string   `json:"comment,omitempty"`
+	ADPassword         string   `json:"ad_password,omitempty"`
+	MarkerConfirmation string   `json:"marker_confirmation,omitempty"`
 }
 
 // Validate implements Params.
@@ -295,10 +316,116 @@ func (p ConfigUpdateParams) Validate() error {
 	if p.BaseVersion < 0 {
 		return errors.New("base_version must not be negative")
 	}
-	if len(p.Comment) > 500 || strings.ContainsAny(p.Comment, "\x00\r\n") {
+	if err := validComment(p.Comment); err != nil {
+		return err
+	}
+	if p.ADPassword != "" {
+		if err := ValidateSecret(SecretADBindPassword, p.ADPassword); err != nil {
+			return err
+		}
+	}
+	if len(p.MarkerConfirmation) > 200 {
+		return errors.New("marker_confirmation: at most 200 bytes")
+	}
+	return nil
+}
+
+func validComment(c string) error {
+	if len(c) > 500 || strings.ContainsAny(c, "\x00\r\n") {
 		return errors.New("comment: one line, at most 500 bytes")
 	}
 	return nil
+}
+
+// ConfigVersionParams reads one stored version with its settings.
+type ConfigVersionParams struct {
+	ID int64 `json:"id"`
+}
+
+// Validate implements Params.
+func (p ConfigVersionParams) Validate() error {
+	if p.ID <= 0 {
+		return errors.New("id > 0")
+	}
+	return nil
+}
+
+// ConfigRollbackParams stores the settings of an earlier version as a new
+// version (origin "rollback"). Secrets are not versioned and stay as they
+// are. The same checks as an update apply (AD sign-in when the AD
+// connection changes, MarkerConfirmation when the marker changes).
+type ConfigRollbackParams struct {
+	BaseVersion        int64  `json:"base_version"`
+	Version            int64  `json:"version"`
+	Comment            string `json:"comment,omitempty"`
+	MarkerConfirmation string `json:"marker_confirmation,omitempty"`
+}
+
+// Validate implements Params.
+func (p ConfigRollbackParams) Validate() error {
+	if p.BaseVersion < 0 || p.Version <= 0 {
+		return errors.New("base_version >= 0 and version > 0")
+	}
+	if len(p.MarkerConfirmation) > 200 {
+		return errors.New("marker_confirmation: at most 200 bytes")
+	}
+	return validComment(p.Comment)
+}
+
+// ValidateSecret checks a secret value for name without revealing it in
+// the error.
+func ValidateSecret(name, value string) error {
+	switch name {
+	case SecretADBindPassword:
+		if value == "" || len(value) > 1024 || strings.ContainsAny(value, "\x00\r\n") {
+			return errors.New("the AD bind password: 1-1024 bytes, one line")
+		}
+	case SecretWebhookSecret:
+		if len(value) < minWebhookSecretLength || len(value) > 1024 {
+			return fmt.Errorf("the webhook secret: %d-1024 bytes", minWebhookSecretLength)
+		}
+		for _, r := range value {
+			if r < 0x21 || r == 0x7f {
+				return errors.New("the webhook secret: printable characters without spaces")
+			}
+		}
+	case SecretGoogleKey:
+		return errors.New("the service account key is set with key.set")
+	default:
+		return fmt.Errorf("unknown secret %q", name)
+	}
+	return nil
+}
+
+// SecretSetParams stores (or replaces) a secret, encrypted at rest. The AD
+// bind password is stored only after a successful sign-in to AD with it.
+type SecretSetParams struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// Validate implements Params.
+func (p SecretSetParams) Validate() error {
+	if len(p.Value) > maxSecretValue {
+		return errors.New("value too large")
+	}
+	return ValidateSecret(p.Name, p.Value)
+}
+
+// SecretRemoveParams removes a stored secret (the configuration file's
+// credential, if any, is used again).
+type SecretRemoveParams struct {
+	Name string `json:"name"`
+}
+
+// Validate implements Params.
+func (p SecretRemoveParams) Validate() error {
+	for _, n := range SecretNames {
+		if p.Name == n {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown secret %q", p.Name)
 }
 
 // ConfigHistoryParams lists configuration versions, newest first.
@@ -332,12 +459,20 @@ func (p KeySetParams) Validate() error {
 
 // ConnectionTestParams tests AD and Google with the saved settings, or with
 // a draft when Settings is set (the stored key is always the one used).
+// ADPassword (write only, used for this test and never stored) replaces
+// the bind password for the AD part.
 type ConnectionTestParams struct {
-	Settings *Settings `json:"settings,omitempty"`
+	Settings   *Settings `json:"settings,omitempty"`
+	ADPassword string    `json:"ad_password,omitempty"`
 }
 
 // Validate implements Params.
-func (ConnectionTestParams) Validate() error { return nil }
+func (p ConnectionTestParams) Validate() error {
+	if p.ADPassword != "" {
+		return ValidateSecret(SecretADBindPassword, p.ADPassword)
+	}
+	return nil
+}
 
 // MappingPreviewParams renders the mapping of a draft (or the saved
 // settings) for a sample of real AD users, without writing anything.

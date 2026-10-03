@@ -1,6 +1,8 @@
 package syncapi
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -55,10 +57,13 @@ func SectionOf(kind string) string {
 
 // ---- settings: the part of the configuration editable through the API ----
 
-// Settings are the sync settings an administrator edits in conductor. Host
-// settings (state directory, credentials, how to reach AD and Google, the
-// ownership marker, alerts) stay in the configuration file and are never
-// changed through the API.
+// Settings are the settings an administrator edits in conductor: the sync
+// settings and (since P5c) the connection settings. Host settings (state
+// directory, credential names, the API socket, the Google API endpoints)
+// stay in the configuration file and are never changed through the API.
+// Secrets (the AD bind password, the Google service account key, the
+// webhook HMAC secret) are not settings: they are set and removed with
+// their own write-only operations and are never part of a version.
 type Settings struct {
 	Mode     string           `json:"mode"`
 	Scope    ScopeSettings    `json:"scope"`
@@ -67,6 +72,97 @@ type Settings struct {
 	Limits   LimitSettings    `json:"limits"`
 	Google   GoogleSettings   `json:"google"`
 	Schedule ScheduleSettings `json:"schedule"`
+	// Connection is how AD and Google are reached, the ownership marker
+	// and the alert webhook. Nil (a version stored before P5c, or a
+	// client that does not send it) keeps the configuration file's values.
+	Connection *ConnectionSettings `json:"connection,omitempty"`
+}
+
+// ConnectionSettings are the connection settings editable since P5c.
+type ConnectionSettings struct {
+	AD     ADConnection     `json:"ad"`
+	Google GoogleConnection `json:"google"`
+	// Marker is the ownership marker (externalIds customType) of the
+	// accounts the sync owns. Changing it orphans the accounts marked with
+	// the previous value: a change needs MarkerConfirmation.
+	Marker string          `json:"marker"`
+	Alert  AlertConnection `json:"alert"`
+}
+
+// ADConnection is how conductor-sync reaches Samba AD.
+type ADConnection struct {
+	Realm string `json:"realm"`
+	// DCs replaces DNS SRV discovery (host names or IP addresses);
+	// Preferred DCs are tried first; DNSServers resolve the domain.
+	DCs        []string `json:"dcs"`
+	Preferred  []string `json:"preferred"`
+	DNSServers []string `json:"dns_servers"`
+	// CAPEM is the domain CA (PEM certificates) pinned for LDAPS. Empty:
+	// the file named by CAFile is used.
+	CAPEM string `json:"ca_pem"`
+	// CAFile is the CA file of the configuration file (read-only here:
+	// a path on the host is not changed through the API).
+	CAFile   string `json:"ca_file,omitempty"`
+	BindUser string `json:"bind_user"`
+	// Auth is "kerberos" or "simple" (LDAP simple bind over TLS).
+	Auth string `json:"auth"`
+}
+
+// GoogleConnection tunes the Directory API client.
+type GoogleConnection struct {
+	RequestsPerSecond float64 `json:"requests_per_second"`
+	MaxRetries        int     `json:"max_retries"`
+	// Timeout is a Go duration ("60s").
+	Timeout string `json:"timeout"`
+}
+
+// AlertConnection is where alerts are posted (empty: the journal only).
+type AlertConnection struct {
+	WebhookURL string `json:"webhook_url"`
+}
+
+// MarkerConfirmation is the text an operator types to change the
+// ownership marker to marker (bound to the new value).
+func MarkerConfirmation(marker string) string { return "change marker to " + marker }
+
+// Secret names (write-only values; only their state is ever returned).
+const (
+	SecretADBindPassword   = "ad_bind_password"
+	SecretGoogleKey        = "google_service_account_key"
+	SecretWebhookSecret    = "alert_webhook_secret"
+	maxSecretValue         = 4096
+	minWebhookSecretLength = 16
+)
+
+// SecretNames lists the secrets, in display order.
+var SecretNames = []string{SecretADBindPassword, SecretGoogleKey, SecretWebhookSecret}
+
+// SecretInfo is the state of one secret; the value is never returned.
+type SecretInfo struct {
+	Name       string `json:"name"`
+	Configured bool   `json:"configured"`
+	// Source is "database" (set through the API or the CLI, encrypted at
+	// rest), "credential" (the file named in the configuration) or "".
+	Source string `json:"source,omitempty"`
+	// Credential is the credential name of the configuration file, if any
+	// (a name, not a value).
+	Credential string    `json:"credential,omitempty"`
+	SetAt      time.Time `json:"set_at,omitzero"`
+	SetBy      string    `json:"set_by,omitempty"`
+	// Error says why a configured credential file cannot be used.
+	Error string `json:"error,omitempty"`
+}
+
+// CASummary describes a PEM bundle without its content: the number of
+// certificates and a short SHA-256 of the text (a CA is public; this keeps
+// diffs and audit lines short).
+func CASummary(pem string) string {
+	if strings.TrimSpace(pem) == "" {
+		return ""
+	}
+	n := strings.Count(pem, "-----BEGIN CERTIFICATE-----")
+	sum := sha256.Sum256([]byte(pem))
+	return fmt.Sprintf("%d certificate(s), sha256 %s", n, hex.EncodeToString(sum[:])[:16])
 }
 
 // ScopeSettings decide which AD users and groups are synced.
@@ -199,6 +295,9 @@ func flatten(s Settings) map[string]string {
 		case nil:
 			out[prefix] = ""
 		case string:
+			if prefix == "connection.ad.ca_pem" {
+				x = CASummary(x)
+			}
 			out[prefix] = x
 		case []any:
 			if len(x) == 0 {
@@ -342,7 +441,8 @@ type Status struct {
 	Ready bool `json:"ready"`
 }
 
-// HostInfo is the read-only part of the configuration (file only).
+// HostInfo is the read-only part of the configuration (file only), plus a
+// summary of the connection in force.
 type HostInfo struct {
 	ConfigPath   string   `json:"config_path"`
 	Realm        string   `json:"realm"`
@@ -353,6 +453,14 @@ type HostInfo struct {
 	Marker       string   `json:"marker"`
 	APIBaseURL   string   `json:"api_base_url"`
 	AlertWebhook bool     `json:"alert_webhook"`
+	// ConnectionStored is set when the connection settings in force come
+	// from a stored version (edited through the API or imported), not
+	// from the file.
+	ConnectionStored bool `json:"connection_stored"`
+	// The credential names of the file (names, never values).
+	PasswordCredential      string `json:"password_credential,omitempty"`
+	KeyCredential           string `json:"key_credential,omitempty"`
+	WebhookSecretCredential string `json:"webhook_secret_credential,omitempty"`
 }
 
 // ConfigView is the current configuration.
@@ -364,6 +472,24 @@ type ConfigView struct {
 	UpdatedBy string    `json:"updated_by,omitempty"`
 	Settings  Settings  `json:"settings"`
 	Host      HostInfo  `json:"host"`
+	// Secrets is the state of every secret (never a value).
+	Secrets []SecretInfo `json:"secrets"`
+}
+
+// Secret returns the state of one secret (zero when unknown).
+func (v ConfigView) Secret(name string) SecretInfo {
+	for _, s := range v.Secrets {
+		if s.Name == name {
+			return s
+		}
+	}
+	return SecretInfo{Name: name}
+}
+
+// ConfigVersionDetail is one stored version with its settings.
+type ConfigVersionDetail struct {
+	ConfigVersion
+	Settings Settings `json:"settings"`
 }
 
 // ConfigVersion is one entry of the configuration history.
@@ -371,7 +497,7 @@ type ConfigVersion struct {
 	ID      int64     `json:"id"`
 	At      time.Time `json:"at"`
 	Actor   string    `json:"actor"`
-	Origin  string    `json:"origin"` // bootstrap | api | cli
+	Origin  string    `json:"origin"` // bootstrap | api | cli | rollback
 	Comment string    `json:"comment,omitempty"`
 	Changes []Change  `json:"changes,omitempty"`
 }
@@ -387,6 +513,9 @@ type ConfigValidateResult struct {
 type ConfigUpdateResult struct {
 	Version int64    `json:"version"`
 	Changes []Change `json:"changes"`
+	// Secrets lists the secrets replaced together with the version
+	// (names only).
+	Secrets []string `json:"secrets,omitempty"`
 }
 
 // ConfigExport is the effective configuration as TOML.
