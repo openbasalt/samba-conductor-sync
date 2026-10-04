@@ -1,8 +1,8 @@
-# conductor-sync — Guidelines
+# conductor-sync: guidelines
 
 Provisioning from Samba AD to other directories: Google Workspace first (Directory API), then Microsoft Entra ID, SCIM 2.0 and GitHub. Plan-then-apply, never deletes, safety limits.
 
-- Read `../CLAUDE.md` (family rules) and `../planning/docs/architecture.md`.
+- Read `../CLAUDE.md` (family rules) and [architecture.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/architecture.md).
 - Go: `go test ./...`, `go vet ./...`, gofmt, govulncheck. Code comments and docs in English.
 - Commit with explicit paths (never `git add -A`).
 - Tests never write to a real Google Workspace: use `internal/fakegoogle` (and `tools/fakegws` for the real binary).

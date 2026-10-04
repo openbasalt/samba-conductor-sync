@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Maintainer lab tooling: it needs the family checkout with the lab
+# scripts (planning/lab), which are not published; the lab is described in
+# https://github.com/openbasalt/samba-conductor-docs/blob/main/testing.md
 # conductor-sync's own AD lab on the lab host: the family lab scripts
 # (planning/lab) run under a different prefix, network and domain, so the
 # shared conductor-lab-* VMs are never touched.

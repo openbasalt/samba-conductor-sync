@@ -41,7 +41,7 @@ primary_email = ["{mail|lower}", "{sAMAccountName|ascii|lower}@example.com"]
 | `family_name` | `{sn}`, `{sAMAccountName}` | |
 | `default_org_unit` | `/` | For users no rule places |
 | `[[mapping.org_units]]` | none | Placement rules, by group or by container (next section). The org units must exist in Google |
-| `[mapping.attributes]` | none | Optional fields, one template each: `title`, `department`, `employee_id`, `phone_work`, `phone_mobile`. **Only listed fields are managed**; an empty AD value clears the Google value |
+| `[mapping.attributes]` | none | Optional fields, one template each: `title`, `department`, `employee_id`, `phone_work`, `phone_mobile`. Only listed fields are managed; an empty AD value clears the Google value |
 
 How optional fields are written: `title` and `department` go to the
 primary entry of `organizations` (other entries are kept); `employee_id`
@@ -56,10 +56,10 @@ state loss.
 
 Two kinds of `[[mapping.org_units]]` rules:
 
-- **group rules**: `group = "<DN or SID>"`, `target`, and an explicit
-  `priority` (an integer from 1; **1 is evaluated first**). Members of the
+- group rules: `group = "<DN or SID>"`, `target`, and an explicit
+  `priority` (an integer from 1; 1 is evaluated first). Members of the
   group, nested membership included, go to `target`;
-- **container rules**: `ad = "<container DN>"`, `target`; no priority, the
+- container rules: `ad = "<container DN>"`, `target`; no priority, the
   most specific container holding the user wins.
 
 Resolution, for each user:
@@ -68,7 +68,7 @@ Resolution, for each user:
    user matches any group rule decides;
    - one matching rule, or several pointing at the same org unit: that org
      unit;
-   - several pointing at **different** org units: a **plan error** for that
+   - several pointing at different org units: a plan error for that
      user (`org-unit-ambiguous`). The plan lists it and the user is left
      untouched (not created, changed, suspended or removed from groups) until
      the configuration or the memberships are fixed. The sync never picks one

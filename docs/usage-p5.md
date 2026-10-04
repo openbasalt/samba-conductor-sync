@@ -5,11 +5,11 @@ secret appears in this document; replace `example.com` with your domains.
 
 ## 1. Google side (once)
 
-1. In the Google Cloud console, create a project and a **service account**
-   (no roles needed on the project). Create a **JSON key** for it and keep
-   the file for step 3. Note the service account's **client ID** (numeric).
+1. In the Google Cloud console, create a project and a service account
+   (no roles needed on the project). Create a JSON key for it and keep
+   the file for step 3. Note the service account's client ID (numeric).
 2. In the Admin console: Security > Access and data control > API controls
-   > **Domain-wide delegation** > Add new: the client ID and these scopes:
+   > Domain-wide delegation > Add new: the client ID and these scopes:
    ```
    https://www.googleapis.com/auth/admin.directory.user
    https://www.googleapis.com/auth/admin.directory.group
@@ -144,7 +144,7 @@ you reviewed run RUN. New accounts get a random password nobody knows and
 must change it at first sign-in: use SSO (P4 SAML) or an admin reset to
 give users access.
 
-Existing Google accounts with the same address are **not** touched (warning
+Existing Google accounts with the same address are not touched (warning
 `unmanaged-exists`). To take them over, set `policy.adopt = "email"` for one
 reviewed run and set it back afterwards.
 
@@ -177,7 +177,7 @@ What AD changes do on Google:
 | name, title, department changed | mapped fields updated (only mapped fields) |
 | logon name / mail changed (address template) | account renamed; Google keeps the old address as an alias |
 | moved to another OU | org unit changed per `[[mapping.org_units]]` |
-| moved out of the scope, filtered out, deleted | account **suspended** (never deleted) and removed from synced groups |
+| moved out of the scope, filtered out, deleted | account suspended (never deleted) and removed from synced groups |
 | disabled (or expired, by default) | account suspended; enabled again: unsuspended (only if the sync suspended it) |
 | group membership changed | member added/removed in the synced group (nested groups mirrored as group members) |
 | group renamed / out of scope | group address/name updated / group kept unchanged |
@@ -196,17 +196,17 @@ when done. Google keeps deleted users restorable for about 20 days.
 
 ## 9. Recovery
 
-- **A run was interrupted** (crash, reboot, kill): nothing to do. The next
+- A run was interrupted (crash, reboot, kill): nothing to do. The next
   run marks it `interrupted`, re-plans from the real state and completes
   the work; accounts created just before the crash are recognized by their
   ownership marker (`user.relink`), groups by the journal (`group.relink`).
-- **Rate limits**: requests are paced (`requests_per_second`) and retried
+- Rate limits: requests are paced (`requests_per_second`) and retried
   with exponential backoff honouring `Retry-After`; if Google still
   throttles after `max_retries`, the run stops (partial) and the next one
   continues.
-- **Partial failures** are reported per object (`cs history --run RUN`);
+- Partial failures are reported per object (`cs history --run RUN`);
   memberships that depend on a failed create are skipped, not failed.
-- **State database lost**: the next plan relinks every account through the
+- State database lost: the next plan relinks every account through the
   marker. Groups have no marker: run once with `adopt = "email"` after
   reviewing the plan.
 

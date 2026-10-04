@@ -4,12 +4,12 @@ Provisioning from Samba AD to other directories. Google Workspace is the
 first connector (Admin SDK Directory API); Microsoft Entra ID, SCIM 2.0 and
 GitHub fit the same connector interface later.
 
-Part of Samba Conductor v2. Design: `../planning/docs/architecture.md` §6,
-phase spec: `../planning/docs/p5-spec.md`.
+Part of Samba Conductor v2. Design: [docs/design.md](docs/design.md) and the family's
+[architecture.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/architecture.md).
 
 ## What it does
 
-- Reads users and groups from AD with a **read-only service account**
+- Reads users and groups from AD with a read-only service account
   (the `ad` library: LDAPS with the domain CA pinned, Kerberos or simple
   bind, paged searches, ranged retrieval of large groups), below the
   configured OUs, optionally only members of include groups and never
@@ -17,10 +17,10 @@ phase spec: `../planning/docs/p5-spec.md`.
 - Maps them to the target: address templates with fallbacks and an allowed
   domain list, names, optional attributes, Google org unit by AD group (with
   priorities) or by AD OU.
-- Computes a **plan** against the target's current state and the recorded
+- Computes a plan against the target's current state and the recorded
   links (AD objectGUID to target ID): create, update, rename, suspend,
   unsuspend, group create/update, add/remove member. Shows it, records it,
-  checks the **safety limits**, then applies it one journaled operation at
+  checks the safety limits, then applies it one journaled operation at
   a time.
 
 ## Safety rules
@@ -38,10 +38,9 @@ phase spec: `../planning/docs/p5-spec.md`.
 | Secrets | the AD password is a systemd credential (or 0600 file); the Google key is stored encrypted (AES-256-GCM, key from the `state-key` credential) or kept as a credential file; never logged, never returned by the API. Initial Google passwords are random, never stored, and must be changed at first sign-in (or SSO, below) |
 | Management API | `conductor-sync serve` on a Unix socket for conductor only (SO_PEERCRED), typed operations, every change audited with the acting AD user; applies bound to a reviewed plan's digest |
 
-Passwords are **not** synchronized: Samba keeps only hashes that Google
-cannot accept. The intended sign-in is SSO through `conductor-idp`'s SAML
-provider (phase P4); until then users get a password from a Google admin
-reset.
+Passwords are not synchronized: Samba keeps only hashes that Google
+cannot accept. Users sign in to Google through `conductor-idp`'s SAML provider (SSO), or
+get a password from a Google admin reset.
 
 ## Commands
 
@@ -105,13 +104,13 @@ scripts under the prefix `conductor-synclab`, network `10.95.0.0/24`, domain
 
 ## Status
 
-P5 (2026-10-02): engine, Google connector, CLI, systemd units, tests (unit,
-fake API, Samba AD lab end to end). P5b (2026-10-03): scope and org unit
-placement by AD group, the management API, and the "Google Workspace sync"
-section of conductor (<https://github.com/openbasalt/samba-conductor/blob/main/docs/usage-p5b.md>). P5c
-(2026-10-03): the connection settings (AD, Google client tuning, ownership
-marker, alert webhook) editable through the API, write-only secrets, settings
-rollback (`docs/usage-p5.md` §14). Not yet tested
+Pre-release: no tagged version yet. Engine, Google connector, CLI,
+systemd units, scope and org unit placement by AD group, the management API
+used by conductor's "Google Workspace sync" section
+(<https://github.com/openbasalt/samba-conductor/blob/main/docs/usage-p5b.md>),
+connection settings editable through the API with write-only secrets and
+settings rollback (`docs/usage-p5.md` §14). Tested with unit tests, a fake
+Directory API and a Samba AD lab end to end. Not yet tested
 against a real Google Workspace (read-only check pending a test tenant).
 
 License: Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)).

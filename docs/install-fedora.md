@@ -1,10 +1,10 @@
 # Installing conductor-sync on Basalt OS / Fedora
 
-conductor-sync on **Basalt OS** (Fedora 44 based, SELinux enforcing) or
-**Fedora 44**, from the RPM packages, next to conductor. The configuration
+conductor-sync on Basalt OS (Fedora 44 based, SELinux enforcing) or
+Fedora 44, from the RPM packages, next to conductor. The configuration
 is the one `docs/usage-p5.md` describes; this page lists what differs. The
-Basalt OS package lab (`../planning/lab/basaltlab/` in the planning
-repository) runs it with SELinux enforcing: dry-run by default, the
+Basalt OS package lab (see
+[testing.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/testing.md)) runs it with SELinux enforcing: dry-run by default, the
 management API socket used by conductor.
 
 ## Package

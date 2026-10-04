@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Maintainer lab tooling: it needs the family checkout with the lab
+# scripts (planning/lab), which are not published; the lab is described in
+# https://github.com/openbasalt/samba-conductor-docs/blob/main/testing.md
 # Run conductor-sync's lab tests on the lab host (its own sync lab, see
 # synclab.sh) from the laptop: build here, copy the binaries over, reset
 # the lab domain to its "seeded" snapshot, run the Go lab tests and the CLI
@@ -10,7 +13,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-HOST="${SYNCLAB_HOST:-server-home}"
+HOST="${SYNCLAB_HOST:?set SYNCLAB_HOST to the SSH destination of the lab host}"
 WHAT="${1:-all}"
 REMOTE_ROOT='~/conductor-synclab'
 
