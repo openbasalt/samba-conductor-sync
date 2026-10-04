@@ -119,6 +119,13 @@ gen_require(`
 list_dirs_pattern(init_t, conductor_sync_cred_t, conductor_sync_cred_t)
 read_files_pattern(init_t, conductor_sync_cred_t, conductor_sync_cred_t)
 
+# systemd removes the unit's private /tmp (PrivateTmp=) when the service
+# stops, with whatever the service left in it.
+list_dirs_pattern(init_t, conductor_sync_tmp_t, conductor_sync_tmp_t)
+delete_dirs_pattern(init_t, conductor_sync_tmp_t, conductor_sync_tmp_t)
+delete_files_pattern(init_t, conductor_sync_tmp_t, conductor_sync_tmp_t)
+delete_sock_files_pattern(init_t, conductor_sync_tmp_t, conductor_sync_tmp_t)
+
 ########################################
 #
 # Started by systemd: the units set NoNewPrivileges=yes, and the services

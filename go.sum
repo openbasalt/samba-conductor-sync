@@ -46,8 +46,8 @@ github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsRe
 github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/openbasalt/samba-conductor-ad v0.0.0-20261003144929-e3e142131ee5 h1:xY6KTIsbrzJnNUXOfme3GOEPKMU1XJ9L+Uynog/Urg4=
-github.com/openbasalt/samba-conductor-ad v0.0.0-20261003144929-e3e142131ee5/go.mod h1:K8mQOVdFN5VkPFZ/LKwLdBiCdh+Qa+7QjqLIi1rktb0=
+github.com/openbasalt/samba-conductor-ad v0.0.0-20261004043531-75ce88dcaaea h1:zgM0TELOuKjFVL+v0zdvE9SXHK7lM/Rc1W2KaLoAbKc=
+github.com/openbasalt/samba-conductor-ad v0.0.0-20261004043531-75ce88dcaaea/go.mod h1:K8mQOVdFN5VkPFZ/LKwLdBiCdh+Qa+7QjqLIi1rktb0=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
