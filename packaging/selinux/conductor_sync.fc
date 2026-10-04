@@ -1,0 +1,10 @@
+# File contexts of the conductor_sync policy module (conductor-sync-selinux).
+/usr/bin/conductor-sync			--	gen_context(system_u:object_r:conductor_sync_exec_t,s0)
+/usr/local/bin/conductor-sync		--	gen_context(system_u:object_r:conductor_sync_exec_t,s0)
+
+/etc/conductor-sync(/.*)?			gen_context(system_u:object_r:conductor_sync_conf_t,s0)
+/etc/conductor-sync/credentials(/.*)?		gen_context(system_u:object_r:conductor_sync_cred_t,s0)
+
+/var/lib/conductor-sync(/.*)?			gen_context(system_u:object_r:conductor_sync_var_lib_t,s0)
+
+/run/conductor-sync(/.*)?			gen_context(system_u:object_r:conductor_sync_var_run_t,s0)

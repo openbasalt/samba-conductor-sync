@@ -1,0 +1,138 @@
+policy_module(conductor_sync, 1.0.0)
+
+# SELinux policy of conductor-sync (conductor_sync_t, the unprivileged
+# "conductor-sync" user): scheduled runs (conductor-sync.service) and the
+# management API (conductor-sync-api.service, socket-activated). Its
+# configuration and state, LDAPS to the domain controllers, HTTPS to Google's
+# APIs, and the API socket that only conductor uses. A mandatory layer under
+# the systemd sandbox of deploy/systemd/conductor-sync*.
+
+########################################
+#
+# Declarations
+#
+
+type conductor_sync_t;
+type conductor_sync_exec_t;
+init_daemon_domain(conductor_sync_t, conductor_sync_exec_t)
+
+# /etc/conductor-sync: conductor-sync.toml and the domain CA.
+type conductor_sync_conf_t;
+files_config_file(conductor_sync_conf_t)
+
+# /etc/conductor-sync/credentials: AD password, state key, optional Google
+# key and webhook key. The services get them from systemd (LoadCredential=);
+# manual runs by an administrator are not confined.
+type conductor_sync_cred_t;
+files_type(conductor_sync_cred_t)
+
+# /var/lib/conductor-sync: links, plans, runs, the encrypted Google key,
+# the audit log.
+type conductor_sync_var_lib_t;
+files_type(conductor_sync_var_lib_t)
+
+# /run/conductor-sync: api.sock, created by systemd for conductor-sync-api.socket.
+type conductor_sync_var_run_t;
+files_pid_file(conductor_sync_var_run_t)
+
+type conductor_sync_tmp_t;
+files_tmp_file(conductor_sync_tmp_t)
+
+########################################
+#
+# conductor-sync local policy
+#
+
+allow conductor_sync_t self:process { getsched setsched signal_perms };
+allow conductor_sync_t self:fifo_file rw_fifo_file_perms;
+allow conductor_sync_t self:unix_stream_socket { accept listen create_stream_socket_perms };
+allow conductor_sync_t self:unix_dgram_socket create_socket_perms;
+allow conductor_sync_t self:netlink_route_socket r_netlink_socket_perms;
+allow conductor_sync_t self:tcp_socket create_stream_socket_perms;
+allow conductor_sync_t self:udp_socket create_socket_perms;
+
+read_files_pattern(conductor_sync_t, conductor_sync_conf_t, conductor_sync_conf_t)
+list_dirs_pattern(conductor_sync_t, conductor_sync_conf_t, conductor_sync_conf_t)
+read_lnk_files_pattern(conductor_sync_t, conductor_sync_conf_t, conductor_sync_conf_t)
+
+manage_dirs_pattern(conductor_sync_t, conductor_sync_var_lib_t, conductor_sync_var_lib_t)
+manage_files_pattern(conductor_sync_t, conductor_sync_var_lib_t, conductor_sync_var_lib_t)
+files_search_var_lib(conductor_sync_t)
+
+# The activation socket (systemd creates it in /run/conductor-sync).
+list_dirs_pattern(conductor_sync_t, conductor_sync_var_run_t, conductor_sync_var_run_t)
+rw_sock_files_pattern(conductor_sync_t, conductor_sync_var_run_t, conductor_sync_var_run_t)
+files_search_pids(conductor_sync_t)
+
+manage_dirs_pattern(conductor_sync_t, conductor_sync_tmp_t, conductor_sync_tmp_t)
+manage_files_pattern(conductor_sync_t, conductor_sync_tmp_t, conductor_sync_tmp_t)
+files_tmp_filetrans(conductor_sync_t, conductor_sync_tmp_t, { file dir })
+
+kernel_read_system_state(conductor_sync_t)
+kernel_read_kernel_sysctls(conductor_sync_t)
+kernel_read_net_sysctls(conductor_sync_t)
+
+dev_read_sysfs(conductor_sync_t)
+dev_read_urand(conductor_sync_t)
+dev_read_rand(conductor_sync_t)
+
+fs_getattr_all_fs(conductor_sync_t)
+fs_search_cgroup_dirs(conductor_sync_t)
+fs_read_cgroup_files(conductor_sync_t)
+
+files_read_etc_files(conductor_sync_t)
+auth_use_nsswitch(conductor_sync_t)
+miscfiles_read_localization(conductor_sync_t)
+miscfiles_read_generic_certs(conductor_sync_t)
+kerberos_read_config(conductor_sync_t)
+sysnet_dns_name_resolve(conductor_sync_t)
+logging_send_syslog_msg(conductor_sync_t)
+
+# LDAP(S) to the domain controllers; HTTPS to Google's APIs and to an
+# optional webhook.
+corenet_tcp_connect_ldap_port(conductor_sync_t)
+corenet_tcp_connect_kerberos_port(conductor_sync_t)
+corenet_tcp_connect_http_port(conductor_sync_t)
+
+########################################
+#
+# conductor uses the management API (conductor's "Google Workspace sync").
+#
+
+optional_policy(`
+	gen_require(`
+		type conductor_t;
+	')
+
+	conductor_sync_api_stream_connect(conductor_t)
+')
+
+########################################
+#
+# systemd (init_t) reads the credentials for LoadCredential=; nothing else
+# in the policy may.
+#
+
+gen_require(`
+	type init_t;
+')
+list_dirs_pattern(init_t, conductor_sync_cred_t, conductor_sync_cred_t)
+read_files_pattern(init_t, conductor_sync_cred_t, conductor_sync_cred_t)
+
+########################################
+#
+# Started by systemd: the units set NoNewPrivileges=yes, and the services
+# read their credentials from $CREDENTIALS_DIRECTORY (/run/credentials/<unit>,
+# which systemd labels init_var_run_t).
+#
+
+init_nnp_daemon_domain(conductor_sync_t)
+
+gen_require(`
+	type init_var_run_t;
+')
+allow conductor_sync_t init_var_run_t:dir search_dir_perms;
+allow conductor_sync_t init_var_run_t:file read_file_perms;
+
+# SQLite in WAL mode maps its shared-memory index (<db>-shm).
+allow conductor_sync_t conductor_sync_var_lib_t:file map;

@@ -1,0 +1,27 @@
+conductor-sync-selinux: SELinux policy for conductor-sync
+=========================================================
+
+The module "conductor_sync" (targeted policy, priority 200) confines
+/usr/bin/conductor-sync in conductor_sync_t when systemd starts it
+(conductor-sync.service, the scheduled runs, and conductor-sync-api.service,
+the management API). Commands an administrator runs by hand
+("sudo -u conductor-sync conductor-sync plan") stay in the administrator's
+domain.
+
+File types:
+
+  conductor_sync_conf_t     /etc/conductor-sync (conductor-sync.toml, domain CA)
+  conductor_sync_cred_t     /etc/conductor-sync/credentials (read by systemd
+                            for the services; by the administrator's manual runs)
+  conductor_sync_var_lib_t  /var/lib/conductor-sync (links, runs, audit log)
+  conductor_sync_var_run_t  /run/conductor-sync (api.sock)
+
+conductor-sync connects to the domain controllers (LDAP/LDAPS, Kerberos)
+and to HTTPS (Google's APIs, an optional webhook). conductor (conductor_t)
+may use the API socket. A metrics_file outside /var/lib/conductor-sync
+needs its own rule (or a path labeled conductor_sync_var_lib_t).
+
+Troubleshooting:
+
+  ausearch -m AVC,USER_AVC -ts recent -c conductor-sync
+  semanage permissive -a conductor_sync_t     (and -d to revert)

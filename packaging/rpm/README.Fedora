@@ -1,0 +1,27 @@
+conductor-sync for Fedora and Basalt OS
+=======================================
+
+Installing the package creates the "conductor-sync" system user
+(sysusers.d), /etc/conductor-sync (root:conductor-sync 0750) with
+credentials/ (conductor-sync 0700), the configuration file
+/etc/conductor-sync/conductor-sync.toml (mode = "dry-run", 0640) and
+/var/lib/conductor-sync. It does not enable or start anything. Where the
+targeted SELinux policy is installed, conductor-sync-selinux comes with it
+and the service runs in conductor_sync_t.
+
+  1. A read-only AD account; its password in credentials/ad-bind and a state
+     key in credentials/state-key (both 0600, owned by conductor-sync).
+  2. The domain CA in /etc/conductor-sync/domain-ca.pem; edit
+     conductor-sync.toml.
+  3. With conductor's "Google Workspace sync" section:
+       sudo systemctl enable --now conductor-sync-api.socket
+     (the socket's group is "conductor": install conductor first).
+  4. Scheduled runs, after a first manual apply:
+       sudo systemctl enable --now conductor-sync.timer
+
+Upgrades restart the management API when it is running. "dnf remove
+conductor-sync" stops and disables the units and removes the packaged
+files; it keeps the credentials (state key), /var/lib/conductor-sync
+(links, runs, audit log) and the system user.
+
+Full guide: https://github.com/openbasalt/samba-conductor-sync/blob/main/docs/install-fedora.md

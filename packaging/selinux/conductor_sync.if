@@ -1,0 +1,40 @@
+## <summary>Samba Conductor sync: provisioning from Samba AD to Google Workspace.</summary>
+
+########################################
+## <summary>
+##	Execute conductor-sync in the conductor_sync domain.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed to transition.
+##	</summary>
+## </param>
+#
+interface(`conductor_sync_domtrans',`
+	gen_require(`
+		type conductor_sync_t, conductor_sync_exec_t;
+	')
+
+	corecmd_search_bin($1)
+	domtrans_pattern($1, conductor_sync_exec_t, conductor_sync_t)
+')
+
+########################################
+## <summary>
+##	Use the conductor-sync management API socket
+##	(/run/conductor-sync/api.sock).
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed access.
+##	</summary>
+## </param>
+#
+interface(`conductor_sync_api_stream_connect',`
+	gen_require(`
+		type conductor_sync_t, conductor_sync_var_run_t;
+	')
+
+	files_search_pids($1)
+	stream_connect_pattern($1, conductor_sync_var_run_t, conductor_sync_var_run_t, conductor_sync_t)
+')

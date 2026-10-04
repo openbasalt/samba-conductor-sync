@@ -1,13 +1,17 @@
-# nfpm configuration of the "conductor-sync" package. Built by
-# packaging/build.sh, which sets ARCH, DEB_VERSION, DEB_REVISION, BUILD
-# (staging directory) and SOURCE_DATE_EPOCH (every timestamp). Paths are
-# relative to the repository root.
+# nfpm configuration of the "conductor-sync" package, one file for the .deb
+# and the .rpm. Built by packaging/build.sh, which sets ARCH, PKG_VERSION,
+# PKG_REVISION, BUILD (staging directory) and SOURCE_DATE_EPOCH (every
+# timestamp). Paths are relative to the repository root. Entries marked
+# "packager: deb" or "packager: rpm" exist in one format only (Debian keeps
+# docs and licenses in /usr/share/doc and sets modes in postinst; Fedora
+# keeps licenses in /usr/share/licenses and owns its directories in the
+# payload).
 name: conductor-sync
 arch: ${ARCH}
 platform: linux
-version: ${DEB_VERSION}
+version: ${PKG_VERSION}
 version_schema: none
-release: ${DEB_REVISION}
+release: ${PKG_REVISION}
 section: admin
 priority: optional
 maintainer: Samba Conductor maintainers <samba-conductor@openbasalt.org>
@@ -20,17 +24,43 @@ description: |-
   read-only account and provisions them to Google Workspace: accounts,
   groups, memberships and suspension. Every run computes a plan first;
   scheduled runs apply only plans inside configured safety limits, nothing
-  is ever deleted automatically, and every operation is journaled and
+  is ever deleted automatically, and every operation is recorded and
   audited. It is part of Samba Conductor; conductor's web interface can
   drive it through a local management API.
   .
   Nothing is started at installation, and a new configuration stays in
-  dry-run (see /usr/share/doc/conductor-sync/README.Debian).
+  dry-run (see the README in /usr/share/doc/conductor-sync).
 
 depends:
   - systemd | systemd-standalone-sysusers | systemd-sysusers
 suggests:
   - conductor
+
+rpm:
+  summary: Provisioning from Samba AD to Google Workspace
+  group: Applications/System
+  buildhost: build.samba-conductor.openbasalt.org
+  compression: zstd
+
+overrides:
+  deb:
+    scripts:
+      postinstall: packaging/scripts/postinst
+      preremove: packaging/scripts/prerm
+      postremove: packaging/scripts/postrm
+  rpm:
+    depends:
+      - systemd
+      # The SELinux policy wherever the targeted policy is installed
+      # (Fedora, Basalt OS): installed first, so the files get their labels.
+      - (conductor-sync-selinux if selinux-policy-targeted)
+    suggests:
+      - conductor
+    scripts:
+      preinstall: packaging/rpm/pre
+      postinstall: packaging/rpm/post
+      preremove: packaging/rpm/preun
+      postremove: packaging/rpm/postun
 
 contents:
   - expand: true
@@ -56,36 +86,98 @@ contents:
   - src: packaging/sysusers.conf
     dst: /usr/lib/sysusers.d/conductor-sync.conf
     file_info: {mode: 0644}
+  # Configuration. Debian: modes from postinst (dpkg-statoverride).
   - src: conductor-sync.toml.example
     dst: /etc/conductor-sync/conductor-sync.toml
     type: config|noreplace
+    packager: deb
+    file_info: {mode: 0644}
+  # Fedora: the package owns its directories with their final modes.
+  - dst: /etc/conductor-sync
+    type: dir
+    packager: rpm
+    file_info: {mode: 0750, owner: root, group: conductor-sync}
+  - src: conductor-sync.toml.example
+    dst: /etc/conductor-sync/conductor-sync.toml
+    type: config|noreplace
+    packager: rpm
+    file_info: {mode: 0640, owner: root, group: conductor-sync}
+  - dst: /etc/conductor-sync/credentials
+    type: dir
+    packager: rpm
+    file_info: {mode: 0700, owner: conductor-sync, group: conductor-sync}
+  - dst: /var/lib/conductor-sync
+    type: dir
+    packager: rpm
+    file_info: {mode: 0700, owner: conductor-sync, group: conductor-sync}
+  # A plain file in the .deb, a documentation file (%doc) in the .rpm.
+  - expand: true
+    src: ${BUILD}/man/conductor-sync.8.gz
+    dst: /usr/share/man/man8/conductor-sync.8.gz
+    packager: deb
     file_info: {mode: 0644}
   - expand: true
     src: ${BUILD}/man/conductor-sync.8.gz
     dst: /usr/share/man/man8/conductor-sync.8.gz
+    type: doc
+    packager: rpm
     file_info: {mode: 0644}
+  # Debian documentation and licenses.
   - src: packaging/copyright
     dst: /usr/share/doc/conductor-sync/copyright
+    packager: deb
     file_info: {mode: 0644}
   - src: NOTICE
     dst: /usr/share/doc/conductor-sync/NOTICE
+    packager: deb
     file_info: {mode: 0644}
   - expand: true
     src: ${BUILD}/doc/conductor-sync/THIRD-PARTY-LICENSES.gz
     dst: /usr/share/doc/conductor-sync/THIRD-PARTY-LICENSES.gz
+    packager: deb
     file_info: {mode: 0644}
   - expand: true
     src: ${BUILD}/doc/conductor-sync/changelog.Debian.gz
     dst: /usr/share/doc/conductor-sync/changelog.Debian.gz
+    packager: deb
     file_info: {mode: 0644}
   - src: packaging/README.Debian
     dst: /usr/share/doc/conductor-sync/README.Debian
+    packager: deb
     file_info: {mode: 0644}
   - src: packaging/lintian-overrides
     dst: /usr/share/lintian/overrides/conductor-sync
+    packager: deb
     file_info: {mode: 0644}
 
-scripts:
-  postinstall: packaging/scripts/postinst
-  preremove: packaging/scripts/prerm
-  postremove: packaging/scripts/postrm
+  # Fedora documentation and licenses (%license, %doc), in directories the
+  # package owns (removed with it).
+  - dst: /usr/share/doc/conductor-sync
+    type: dir
+    packager: rpm
+    file_info: {mode: 0755}
+  - dst: /usr/share/licenses/conductor-sync
+    type: dir
+    packager: rpm
+    file_info: {mode: 0755}
+  - src: LICENSE
+    dst: /usr/share/licenses/conductor-sync/LICENSE
+    type: license
+    packager: rpm
+    file_info: {mode: 0644}
+  - src: NOTICE
+    dst: /usr/share/licenses/conductor-sync/NOTICE
+    type: license
+    packager: rpm
+    file_info: {mode: 0644}
+  - expand: true
+    src: ${BUILD}/doc/conductor-sync/THIRD-PARTY-LICENSES
+    dst: /usr/share/licenses/conductor-sync/THIRD-PARTY-LICENSES
+    type: license
+    packager: rpm
+    file_info: {mode: 0644}
+  - src: packaging/rpm/README.Fedora
+    dst: /usr/share/doc/conductor-sync/README.Fedora
+    type: doc
+    packager: rpm
+    file_info: {mode: 0644}

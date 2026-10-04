@@ -33,6 +33,8 @@ administrator. (`conductor setup` will create it in a later phase.)
 
 ## 3. Install
 
+Basalt OS and Fedora (RPM packages, SELinux): `install-fedora.md`.
+
 (Samba 4.19 DCs, Ubuntu 24.04: see the `ldap server require strong auth`
 note in conductor's install doc; Kerberos binds need it.)
 

@@ -1,0 +1,13 @@
+#!/bin/sh
+# %pre of conductor-sync (RPM): the system user exists before the payload is
+# unpacked, because /etc/conductor-sync and /var/lib/conductor-sync are
+# owned by it. The entry is the one in
+# /usr/lib/sysusers.d/conductor-sync.conf (build.sh checks that they match);
+# systemd-sysusers reads it from stdin, as Fedora's %sysusers_create_compat
+# does.
+if [ -x /usr/bin/systemd-sysusers ]; then
+	/usr/bin/systemd-sysusers --replace=/usr/lib/sysusers.d/conductor-sync.conf - <<'SYSUSERS' || :
+u conductor-sync - "Samba Conductor sync" /var/lib/conductor-sync /usr/sbin/nologin
+SYSUSERS
+fi
+exit 0

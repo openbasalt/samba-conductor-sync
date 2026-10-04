@@ -1,0 +1,17 @@
+#!/bin/sh
+# %postun of conductor-sync (RPM), as Fedora's %systemd_postun_with_restart:
+# on upgrade the long-running units that are running are restarted with the
+# new binaries at the end of the transaction (a stopped unit stays stopped;
+# enabled units stay enabled). On removal rpm keeps edited configuration as
+# .rpmsave and leaves what the administrator created (credentials (state
+# key), the links, runs and audit log in /var/lib/conductor-sync) and the
+# system user.
+UNITS="conductor-sync-api.service"
+if [ "$1" -ge 1 ]; then
+	if [ -x /usr/lib/systemd/systemd-update-helper ]; then
+		/usr/lib/systemd/systemd-update-helper mark-restart-system-units $UNITS || :
+	else
+		systemctl try-restart $UNITS >/dev/null 2>&1 || :
+	fi
+fi
+exit 0

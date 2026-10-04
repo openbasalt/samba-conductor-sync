@@ -1,0 +1,81 @@
+# nfpm configuration of the "conductor-sync-selinux" package (RPM only, noarch):
+# the SELinux policy module of conductor-sync for the
+# targeted policy (Fedora, Basalt OS). Built by packaging/build.sh after
+# packaging/selinux/build.sh; it sets PKG_VERSION, PKG_REVISION,
+# SELINUX_POLICY_VERSION (the policy the module was compiled against) and
+# SELINUX_BUILD (build/selinux). Paths are relative to the repository root.
+name: conductor-sync-selinux
+arch: all
+platform: linux
+version: ${PKG_VERSION}
+version_schema: none
+release: ${PKG_REVISION}
+maintainer: Samba Conductor maintainers <samba-conductor@openbasalt.org>
+vendor: OpenBasalt
+homepage: https://github.com/openbasalt/samba-conductor-sync
+# The sources are Apache-2.0; the compiled module contains expansions of the
+# reference policy's macros (selinux-policy, GPL-2.0-or-later).
+license: Apache-2.0 AND GPL-2.0-or-later
+description: |-
+  SELinux policy module for Samba Conductor sync
+  The targeted-policy module of conductor-sync: scheduled runs and the
+  management API run in conductor_sync_t, limited to their configuration
+  and state, LDAPS to the domain controllers, HTTPS to Google's APIs and
+  the API socket conductor uses. Installed with conductor-sync wherever the
+  targeted policy is.
+
+rpm:
+  summary: SELinux policy module for Samba Conductor sync
+  group: System Environment/Base
+  buildhost: build.samba-conductor.openbasalt.org
+  compression: zstd
+  requires:
+    post:
+      - selinux-policy-targeted >= ${SELINUX_POLICY_VERSION}
+      - policycoreutils
+      - libselinux-utils
+  scripts:
+    posttrans: build/selinux/scripts/posttrans
+
+depends:
+  - selinux-policy-targeted >= ${SELINUX_POLICY_VERSION}
+
+scripts:
+  preinstall: build/selinux/scripts/pre
+  postinstall: build/selinux/scripts/post
+  postremove: build/selinux/scripts/postun
+
+contents:
+  - expand: true
+    src: ${SELINUX_BUILD}/conductor_sync.pp.bz2
+    dst: /usr/share/selinux/packages/targeted/conductor_sync.pp.bz2
+    file_info: {mode: 0644}
+  - expand: true
+    src: ${SELINUX_BUILD}/conductor_sync.if
+    dst: /usr/share/selinux/devel/include/distributed/conductor_sync.if
+    file_info: {mode: 0644}
+
+  - dst: /usr/share/doc/conductor-sync-selinux
+    type: dir
+    file_info: {mode: 0755}
+  - src: packaging/selinux/README
+    dst: /usr/share/doc/conductor-sync-selinux/README
+    type: doc
+    file_info: {mode: 0644}
+
+  - dst: /usr/share/licenses/conductor-sync-selinux
+    type: dir
+    file_info: {mode: 0755}
+  - src: LICENSE
+    dst: /usr/share/licenses/conductor-sync-selinux/LICENSE
+    type: license
+    file_info: {mode: 0644}
+  - src: NOTICE
+    dst: /usr/share/licenses/conductor-sync-selinux/NOTICE
+    type: license
+    file_info: {mode: 0644}
+  - expand: true
+    src: ${SELINUX_BUILD}/doc/conductor-sync-selinux/THIRD-PARTY-LICENSES
+    dst: /usr/share/licenses/conductor-sync-selinux/THIRD-PARTY-LICENSES
+    type: license
+    file_info: {mode: 0644}

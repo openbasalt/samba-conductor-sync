@@ -1,0 +1,24 @@
+# rpmlint filters for the conductor-sync packages (packaging/rpmlint.sh runs
+# Fedora 44's rpmlint with --strict). Each filter says why it is right here.
+
+# The binary is a static Go program by design: CGO off, built with the
+# upstream Go toolchain, one artifact for every supported distribution (the
+# same binary as the .deb). No libc to track.
+addFilter(r"statically-linked-binary /usr/bin/conductor-sync")
+# Not position independent: the Go linker's default executable mode, the
+# same binary as the .deb (building with -buildmode=pie is an open decision,
+# planning/docs/packaging.md).
+addFilter(r"position-independent-executable-suggested /usr/bin/conductor-sync")
+# The "conductor-sync" system user and group come from the package's own
+# sysusers.d entry (created in %pre); Fedora's registry of standard users
+# lists distribution packages only.
+addFilter(r"non-standard-(uid|gid) /(etc|var/lib)/conductor-sync")
+# Restricted on purpose: the configuration names the AD account and the
+# credentials' paths; for root and the conductor-sync group only.
+addFilter(r"non-standard-dir-perm /etc/conductor-sync 750")
+addFilter(r"non-readable /etc/conductor-sync/conductor-sync.toml 640")
+# The SELinux scriptlets are Fedora's own %selinux_relabel_pre/_post and
+# %selinux_modules_uninstall macros: a copy of the file contexts is taken
+# before the module changes and removed after the relabel.
+addFilter(r"conductor-sync-selinux\.noarch: E: dangerous-command-in-%(pre|postun) cp")
+addFilter(r"conductor-sync-selinux\.noarch: E: dangerous-command-in-%posttrans rm")
