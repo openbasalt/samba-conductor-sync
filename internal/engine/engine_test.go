@@ -707,3 +707,45 @@ func TestLockExcludesConcurrentRuns(t *testing.T) {
 		t.Fatalf("plan under lock: %v", err)
 	}
 }
+
+// The Directory API is eventually consistent. On a real tenant, adding
+// members right after creating the group answered 404 groupKey; the
+// connector retries a 404 on a member insert with backoff.
+func TestMemberAddRetriesNotFoundAfterCreate(t *testing.T) {
+	e := newEnv(t)
+	e.seed()
+	e.fake.Fail(fakegoogle.Fault{Method: http.MethodPost, PathPrefix: "/groups/", Status: http.StatusNotFound,
+		Reason: "notFound", Count: 3})
+	r := e.mustApply(engine.ApplyOptions{})
+	if r.Failed != 0 {
+		t.Fatalf("failures %v", r.Failures)
+	}
+	if p := e.plan(); !p.Plan.Empty() {
+		t.Fatalf("not converged: %v", p.Plan.Ops)
+	}
+}
+
+// A linked object missing from a (lagging) list but found by a direct get
+// is not "removed outside the sync": no unlink, no second create.
+func TestLaggingListDoesNotRecreate(t *testing.T) {
+	e := newEnv(t)
+	e.seed()
+	e.mustApply(engine.ApplyOptions{})
+	u := e.userByEmail("user0011@example.com")
+	g, _, ok := e.fake.GroupByEmail("staff@groups.example.com")
+	if !ok {
+		t.Fatal("group staff missing")
+	}
+	e.fake.HideFromList(u.ID, true)
+	e.fake.HideFromList(g.ID, true)
+	if p := e.plan(); !p.Plan.Empty() {
+		t.Fatalf("lagging list changed the plan: %v %v", p.Plan.Ops, p.Plan.Warnings)
+	}
+	// A real removal (404 on the direct get) is still detected.
+	e.fake.HideFromList(u.ID, false)
+	e.fake.DeleteUserDirect(u.ID)
+	counts := e.plan().Plan.Counts()
+	if counts[plan.UserUnlink] != 1 || counts[plan.UserCreate] != 1 {
+		t.Fatalf("removal not detected: %v", counts)
+	}
+}

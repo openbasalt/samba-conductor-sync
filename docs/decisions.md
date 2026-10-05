@@ -273,3 +273,21 @@ Settings > Connection page), with more safeguards than the sync settings.
     bump turns that into a clear `version` error. conductor and
     conductor-sync are upgraded together (the lab snapshot conductor-p2b now
     reinstalls both).
+
+## Eventual consistency of the Google Directory API (2026-10-05)
+
+Found in the first run against a real tenant; the fake answered every read
+with the latest write, so the suites never saw it.
+
+44. A member insert right after the group's create can answer 404
+    (`Resource Not Found: groupKey`), and so can one for a user created
+    seconds earlier. `AddMember` retries a 404 with the client's backoff
+    (up to `max_retries`) before reporting the operation as failed.
+45. `users.list` and `groups.list` lag behind writes: a user created by the
+    previous run was missing from the list while `users.get` found it, and
+    the plan proposed `user.unlink` plus a second `user.create`. Before
+    planning, every linked object absent from the list is read directly by
+    its ID (`users.get`, `groups.get` with members); only a 404 there means
+    it was removed outside the sync. The cost is one read per missing link,
+    normally zero. `internal/fakegoogle` can hide an object from lists
+    (`HideFromList`) to test it.

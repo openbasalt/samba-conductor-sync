@@ -700,7 +700,20 @@ func (g *Connector) AddMember(ctx context.Context, groupID string, kind model.Ki
 	} else {
 		m.Email = memberEmail
 	}
-	_, err := g.c.do(ctx, http.MethodPost, apiPrefix+"/groups/"+url.PathEscape(groupID)+"/members", nil, m, nil)
+	var err error
+	for attempt := 0; ; attempt++ {
+		_, err = g.c.do(ctx, http.MethodPost, apiPrefix+"/groups/"+url.PathEscape(groupID)+"/members", nil, m, nil)
+		// The Directory API is eventually consistent: a group or a user
+		// created moments ago in this run may still answer 404 (seen on a
+		// real tenant: "Resource Not Found: groupKey" right after the
+		// group's create). Retry a 404 with backoff before failing.
+		if err == nil || !errors.Is(err, connector.ErrNotFound) || attempt >= g.c.maxRetries {
+			break
+		}
+		if perr := g.c.pause(ctx, attempt, 0); perr != nil {
+			return perr
+		}
+	}
 	if err != nil && errors.Is(err, connector.ErrConflict) {
 		return nil // already a member
 	}
@@ -739,6 +752,23 @@ func (g *Connector) GetUser(ctx context.Context, key string) (*model.TargetUser,
 	g.mu.Unlock()
 	t := g.toModel(&u)
 	return &t, nil
+}
+
+// GetGroup implements connector.GroupGetter: one group by ID or address,
+// with its members (read-only scope).
+func (g *Connector) GetGroup(ctx context.Context, key string) (*model.TargetGroup, error) {
+	var gr apiGroup
+	if _, err := g.c.do(ctx, http.MethodGet, apiPrefix+"/groups/"+url.PathEscape(key), nil, nil, &gr); err != nil {
+		return nil, err
+	}
+	tg := model.TargetGroup{ID: gr.ID, Email: model.NormalizeEmail(gr.Email), Name: gr.Name, Description: gr.Description,
+		Aliases: append(append([]string(nil), gr.Aliases...), gr.NonEditableAliases...)}
+	members, err := g.members(ctx, gr.ID)
+	if err != nil {
+		return nil, err
+	}
+	tg.Members = members
+	return &tg, nil
 }
 
 // DeleteUser implements connector.Connector (manual delete command only).

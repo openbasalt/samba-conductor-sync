@@ -35,6 +35,13 @@ type Snapshot struct {
 	Groups []model.TargetGroup
 }
 
+// GroupGetter is implemented by connectors that can read one group (with
+// its members) directly, used to confirm a linked group that a list did
+// not return (eventually consistent targets).
+type GroupGetter interface {
+	GetGroup(ctx context.Context, key string) (*model.TargetGroup, error)
+}
+
 // Connector is one target directory.
 type Connector interface {
 	// Name identifies the connector in state and audit ("google").

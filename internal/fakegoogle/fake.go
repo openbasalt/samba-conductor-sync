@@ -119,6 +119,7 @@ type Server struct {
 	groups   map[string]*Group
 	orgUnits map[string]bool
 	faults   []*Fault
+	hidden   map[string]bool
 	writes   []Write
 	requests int
 	nextID   int
@@ -193,6 +194,23 @@ func (s *Server) SetLatency(d time.Duration) {
 	s.mu.Lock()
 	s.Latency = d
 	s.mu.Unlock()
+}
+
+// HideFromList makes users.list and groups.list leave out the object with
+// this ID (or show it again), while a direct get still finds it: the
+// eventual consistency of the real Directory API, where an object created
+// seconds ago may be missing from a list.
+func (s *Server) HideFromList(id string, hidden bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hidden == nil {
+		s.hidden = map[string]bool{}
+	}
+	if hidden {
+		s.hidden[id] = true
+	} else {
+		delete(s.hidden, id)
+	}
 }
 
 // ClearFaults drops queued faults.
@@ -702,7 +720,9 @@ func (s *Server) page(r *http.Request, n int) (start, end int, next string) {
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	all := make([]*User, 0, len(s.users))
 	for _, u := range s.users {
-		all = append(all, u)
+		if !s.hidden[u.ID] {
+			all = append(all, u)
+		}
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
 	start, end, next := s.page(r, len(all))
@@ -833,7 +853,9 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request, u *User) {
 func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	all := make([]*Group, 0, len(s.groups))
 	for _, g := range s.groups {
-		all = append(all, g)
+		if !s.hidden[g.ID] {
+			all = append(all, g)
+		}
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
 	start, end, next := s.page(r, len(all))

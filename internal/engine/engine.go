@@ -160,6 +160,56 @@ func inflightOf(entries []store.JournalEntry) []plan.InFlight {
 	return out
 }
 
+// confirmLinked reads directly every linked target object that the list
+// did not return and adds the ones that still exist to the snapshot. A
+// target's list can lag behind its writes (the Google Directory API is
+// eventually consistent: a user created seconds ago may be missing from
+// users.list while users.get finds it); without this the plan would call
+// the object "removed outside the sync", unlink it and create it again.
+// Only a 404 on the direct read confirms that an object is gone.
+func confirmLinked(ctx context.Context, c connector.Connector, snap *connector.Snapshot, links []plan.Link, manageGroups bool) error {
+	users := make(map[string]bool, len(snap.Users))
+	for _, u := range snap.Users {
+		users[u.ID] = true
+	}
+	groups := make(map[string]bool, len(snap.Groups))
+	for _, g := range snap.Groups {
+		groups[g.ID] = true
+	}
+	gg, canGetGroups := c.(connector.GroupGetter)
+	for _, l := range links {
+		switch {
+		case l.TargetID == "":
+			continue
+		case l.Kind == model.KindUser && !users[l.TargetID]:
+			u, err := c.GetUser(ctx, l.TargetID)
+			if errors.Is(err, connector.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("confirm linked user %s: %w", l.Key, err)
+			}
+			if u.ID == l.TargetID {
+				users[u.ID] = true
+				snap.Users = append(snap.Users, *u)
+			}
+		case l.Kind == model.KindGroup && manageGroups && canGetGroups && !groups[l.TargetID]:
+			g, err := gg.GetGroup(ctx, l.TargetID)
+			if errors.Is(err, connector.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("confirm linked group %s: %w", l.Key, err)
+			}
+			if g.ID == l.TargetID {
+				groups[g.ID] = true
+				snap.Groups = append(snap.Groups, *g)
+			}
+		}
+	}
+	return nil
+}
+
 func (e *Engine) compute(ctx context.Context, c connector.Connector) (*Computed, error) {
 	src, err := e.Source.Read(ctx)
 	if err != nil {
@@ -176,6 +226,9 @@ func (e *Engine) compute(ctx context.Context, c connector.Connector) (*Computed,
 	links := make([]plan.Link, len(rows))
 	for i, r := range rows {
 		links[i] = r.Link
+	}
+	if err := confirmLinked(ctx, c, snap, links, e.Policy.ManageGroups); err != nil {
+		return nil, err
 	}
 	inflight, err := e.Store.InFlight(ctx, e.ConnectorName)
 	if err != nil {
