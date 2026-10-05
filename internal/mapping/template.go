@@ -177,8 +177,15 @@ func ParseChain(srcs []string) (Chain, error) {
 // Render returns the first value accepted by valid (nil accepts any
 // non-empty value).
 func (c Chain) Render(a Attrs, valid func(string) error) (string, error) {
+	v, _, err := c.RenderIndex(a, valid)
+	return v, err
+}
+
+// RenderIndex is Render that also returns the position of the template
+// that produced the value (0 = the first one; above 0 = a fallback).
+func (c Chain) RenderIndex(a Attrs, valid func(string) error) (string, int, error) {
 	var errs []error
-	for _, t := range c {
+	for i, t := range c {
 		v, err := t.Render(a)
 		if err != nil {
 			errs = append(errs, err)
@@ -190,12 +197,12 @@ func (c Chain) Render(a Attrs, valid func(string) error) (string, error) {
 				continue
 			}
 		}
-		return v, nil
+		return v, i, nil
 	}
 	if len(errs) == 0 {
-		return "", errors.New("mapping: no template")
+		return "", -1, errors.New("mapping: no template")
 	}
-	return "", errors.Join(errs...)
+	return "", -1, errors.Join(errs...)
 }
 
 // Attributes lists every attribute read by the chain.

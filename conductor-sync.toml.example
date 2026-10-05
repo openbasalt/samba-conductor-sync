@@ -103,6 +103,15 @@ suspend_disabled = true          # disabled in AD -> suspended in Google
 create_disabled = false          # do not create accounts for disabled users
 adopt = "never"                  # "email": take over existing accounts with the same address
 remove_unmanaged_members = false # keep members of synced groups that the sync does not manage
+# Adopting an existing Google Workspace (adopt = "email"): what the sync may
+# change on accounts and groups that existed before it. The defaults keep an
+# adopted account as it was; see docs/mapping.md, "Adopting an existing
+# Google Workspace". Passwords are never sent to adopted accounts.
+adopted_org_unit = "keep"        # or "manage": move it by the org unit rules
+adopted_email = "keep"           # or "manage": rename it when AD renders another address
+adopted_names = "if-set"         # or "keep" / "manage": names only when AD has its own value
+adopted_attributes = "if-set"    # or "keep" / "manage": an empty AD value never clears
+adopted_group_members = "add-only" # or "manage": adopted groups never lose a member
 
 # Scheduled runs apply only plans inside these limits; otherwise they stop,
 # record the plan as blocked and alert. 0 = none allowed, -1 = no limit.

@@ -55,7 +55,13 @@ the target.
   never break a link.
 - The sync changes only accounts it links or that carry its marker. An
   existing account with the same address is reported and left alone,
-  unless adoption by e-mail is configured. A marker with another
+  unless adoption by e-mail is configured. An adopted account is marked
+  as adopted (in the link and with a second `externalIds` entry, so a
+  lost state database does not forget it) and keeps, by default, its org
+  unit, its address, and every name or field AD has no value of its own
+  for; adopted groups are add-only. A disabled AD user never adopts an
+  account. The rules and their switches are in
+  [mapping.md](mapping.md#adopting-an-existing-google-workspace). A marker with another
   objectGUID (an AD account deleted and recreated) is a conflict, never a
   takeover.
 - Google administrators and the impersonated subject are never suspended
@@ -105,14 +111,20 @@ the target.
   must be linked, carry the marker for that link, have been suspended by
   the sync for at least `min_suspended_days` (30 by default), be out of
   the AD scope at that moment, and be confirmed by typing its address.
-  Groups are never deleted.
+  Adopted accounts (they existed before the sync) are never deleted by
+  it. Groups are never deleted.
 
 ## Passwords
 
 Passwords are not synchronized: Samba keeps only hashes that Google cannot
 accept. New Google accounts get a random 32-character password generated
 in the connector, sent once, never logged or stored, with a change
-required at next sign-in. The intended sign-in is SSO through the SAML
+required at next sign-in. That create is the only request that carries a
+password: updates, adoptions, suspensions and renames never send
+`password` or `changePasswordAtNextLogin`, so an existing or adopted
+account keeps its password. The optional request log
+(`CONDUCTOR_SYNC_REQUEST_LOG=<file>`: method, path, status and the names
+of the body's top-level fields, never values) lets an operator verify it. The intended sign-in is SSO through the SAML
 provider of
 [conductor-idp](https://github.com/openbasalt/samba-conductor-idp/blob/main/docs/design.md),
 or a Google administrator reset.
@@ -185,5 +197,5 @@ or a Google administrator reset.
 - Metrics: a Prometheus textfile written atomically; no listener.
 - Tests use a fake Directory API that models users, groups, members, org
   units, pagination, the JWT grant and injected faults. No real Workspace
-  is written by tests; the connector has not yet been run against a real
-  Workspace tenant.
+  is written by tests; the connector is also exercised by hand against a
+  real Google tenant.

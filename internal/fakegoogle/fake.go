@@ -9,6 +9,7 @@
 package fakegoogle
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -92,6 +93,8 @@ type Write struct {
 	Method string `json:"method"`
 	Path   string `json:"path"`
 	Status int    `json:"status"`
+	// Fields are the top-level field names of the request body (sorted).
+	Fields []string `json:"fields,omitempty"`
 }
 
 // Server is the fake.
@@ -602,11 +605,23 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, fault.Status, fault.Reason, "injected failure")
 		return
 	}
+	var fields []string
+	if write && r.Body != nil {
+		raw, _ := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		var m map[string]json.RawMessage
+		if json.Unmarshal(raw, &m) == nil {
+			for k := range m {
+				fields = append(fields, k)
+			}
+			sort.Strings(fields)
+		}
+	}
 	rec := &recorder{status: http.StatusOK, header: http.Header{}}
 	s.mu.Lock()
 	s.route(rec, r, path)
 	if write {
-		s.writes = append(s.writes, Write{Method: r.Method, Path: path, Status: rec.status})
+		s.writes = append(s.writes, Write{Method: r.Method, Path: path, Status: rec.status, Fields: fields})
 	}
 	s.mu.Unlock()
 	if fault != nil && fault.AfterCommit {

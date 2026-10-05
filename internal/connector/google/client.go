@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -120,6 +121,37 @@ type client struct {
 	mu       sync.Mutex
 	requests int
 	retries  int
+	// reqLog receives field names only (see Options.RequestLog).
+	reqLog io.Writer
+}
+
+// logRequest writes one request log line: field names, never values.
+func (c *client) logRequest(method, path string, fields []string, status int, failed bool) {
+	if c.reqLog == nil {
+		return
+	}
+	if fields == nil {
+		fields = []string{}
+	}
+	line, _ := json.Marshal(map[string]any{"time": c.now().UTC().Format(time.RFC3339Nano), "method": method, "path": path,
+		"status": status, "failed": failed, "fields": fields})
+	c.mu.Lock()
+	_, _ = c.reqLog.Write(append(line, '\n'))
+	c.mu.Unlock()
+}
+
+// bodyFields returns the sorted top-level field names of a JSON object.
+func bodyFields(payload []byte) []string {
+	var m map[string]json.RawMessage
+	if len(payload) == 0 || json.Unmarshal(payload, &m) != nil {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // callInfo tells a caller whether an earlier attempt of the same call may
@@ -178,6 +210,13 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 		c.requests++
 		c.mu.Unlock()
 		resp, err := c.hc.Do(req)
+		if c.reqLog != nil {
+			status := 0
+			if resp != nil {
+				status = resp.StatusCode
+			}
+			c.logRequest(method, path, bodyFields(payload), status, err != nil)
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return info, ctx.Err()

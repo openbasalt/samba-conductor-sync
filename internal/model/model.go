@@ -74,6 +74,12 @@ type SourceUser struct {
 	// silent pick (an ambiguous org unit): the plan reports it and leaves
 	// the user untouched (not created, not changed, not suspended).
 	Error string
+	// Fallback marks fields rendered by a fallback template (not the first
+	// of their list), e.g. a given name taken from sAMAccountName because
+	// givenName is empty. Fallbacks exist so that created accounts get the
+	// names Google requires; they never overwrite an adopted account's
+	// values under the default policy.
+	Fallback map[UserField]bool
 }
 
 // ScopeGroup is an AD group referenced by the scope (include or exclude)
@@ -127,7 +133,10 @@ type TargetUser struct {
 	// Protected accounts (target administrators, the delegated admin the
 	// connector acts as) are never suspended or renamed by the sync.
 	Protected bool
-	Attrs     UserAttrs
+	// Adopted is set when the account carries the sync's adoption mark: it
+	// existed before the sync and was taken over by address, not created.
+	Adopted bool
+	Attrs   UserAttrs
 	// Aliases are other addresses that route to this account (a renamed
 	// account keeps its old address as an alias on Google).
 	Aliases []string

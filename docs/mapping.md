@@ -107,7 +107,8 @@ address as an alias, so mail keeps arriving. Renames have their own limit
 Two AD users that render the same address are both left alone (warning
 `duplicate-address`) until one is fixed. An address that already belongs to
 a Google account the sync does not own is reported (`unmanaged-exists`)
-and left alone unless `policy.adopt = "email"`.
+and left alone unless `policy.adopt = "email"` (see "Adopting an existing
+Google Workspace" below).
 
 ## Scope
 
@@ -153,11 +154,89 @@ member; a group member that is itself synced becomes a GROUP member
 (nesting is mirrored, not flattened). AD primary-group membership (Domain
 Users) is not a `member` value and is not synced. Members in Google that
 the sync does not manage (external addresses, people added by hand) are
-kept unless `policy.remove_unmanaged_members = true`. Added members get the
+kept unless `policy.remove_unmanaged_members = true` (for adopted groups,
+only with `adopted_group_members = "manage"`). Added members get the
 role `google.member_role` (MEMBER).
 
 A group that leaves the scope is kept as it is, with its members (warning
 `group-out-of-scope`); delete it by hand if intended.
+
+## Adopting an existing Google Workspace
+
+A company that already uses Google Workspace has accounts, org units,
+groups and aliases that people rely on. To connect AD to it, start with
+`policy.adopt = "email"` and add users to the AD scope gradually: each AD
+user whose rendered address equals an existing account's primary address
+is adopted. Adoption takes the account over; it does not recreate, reset,
+move, rename or delete it.
+
+What adoption does, on the adoption run:
+
+- writes the ownership marker (`externalIds`, `customType` =
+  `google.marker`, value = the AD objectGUID) and an adoption mark
+  (`customType` = `<marker>-adopted`), keeping every other `externalIds`
+  entry. The link in the state database records that the account was
+  adopted, not created; the mark on the account keeps that fact if the
+  state database is lost;
+- writes the names and mapped fields allowed by the rules below, and
+  nothing else.
+
+What adoption never does:
+
+- send a password or `changePasswordAtNextLogin`. Only an account the sync
+  creates gets a password (random, sent once, never stored). An adopted
+  account keeps its password, its sign-in method and its 2-Step
+  Verification;
+- change aliases, recovery e-mail or phone, photos, licenses, admin roles,
+  or any field that is not mapped;
+- suspend the account. An AD user that is disabled (or past
+  `accountExpires`) never adopts an account: the plan shows
+  `disabled-not-adopted` and leaves it alone until the AD user is enabled;
+- unsuspend an account that someone else suspended (`suspended-outside-sync`);
+- delete anything. `conductor-sync delete-user` refuses adopted accounts:
+  they existed before the sync, so only an administrator deletes them, in
+  the Admin console.
+
+The adopted rules apply on the adoption run and on every later run of an
+adopted account or group. Accounts the sync creates follow the mapping as
+usual.
+
+| Key (`[policy]`) | Default | Values |
+|---|---|---|
+| `adopted_org_unit` | `keep` | `keep`: the account stays in its org unit forever; `manage`: placed by the org unit rules like a created account |
+| `adopted_email` | `keep` | `keep`: the primary address of an adopted account or group is never changed; when AD renders another address the plan warns `adopted-address-kept`; `manage`: renamed (`user.rename`, the old address stays as an alias) |
+| `adopted_names` | `if-set` | given and family name, and an adopted group's name and description. `if-set`: written only when AD has a value of its own (not empty, and not rendered by a fallback template such as `{sAMAccountName}` when `givenName` is empty); `keep`: never written; `manage`: always written |
+| `adopted_attributes` | `if-set` | the optional fields of `[mapping.attributes]`. `if-set`: an empty AD value never clears the Google value; `keep`: never written; `manage`: as for created accounts (an empty AD value clears) |
+| `adopted_group_members` | `add-only` | adopted groups. `add-only`: members are added, never removed, managed or not (`adopted-member-kept`, `unmanaged-member-kept`); `manage`: AD decides the managed members, and `remove_unmanaged_members` applies |
+
+Later effects, which are the normal sync rules:
+
+- disabling the AD user, or taking it out of the scope (moving it out of
+  the bases, out of the include groups, into an exclude group, or deleting
+  it), suspends the adopted account. Enabling it, or putting it back,
+  unsuspends it, because the sync did the suspension. The safety limits
+  stop a scheduled run that would suspend or change too many accounts;
+- an account suspended by an administrator stays suspended whatever AD
+  says.
+
+A plan shows every adoption as `user.adopt` or `group.adopt` with the
+fields it changes; the reason lists the fields whose AD value differs but
+is kept on the account (`adopt existing account by address; kept on the
+account: org_unit`).
+
+Rollout:
+
+1. Keep `mode = "dry-run"` and set `adopt = "email"` with the defaults
+   above. Use small limits (`max_updates`, `max_creates`, `max_suspends`,
+   `max_touched_percent`).
+2. Put a few AD users in the scope (an include group is a convenient
+   switch), plan, and read every `user.adopt`: the changes must be only
+   the names you expect. Check the warnings (`unmanaged-exists` for
+   addresses that differ in case or domain, `alias-collision` when the AD
+   address is an alias of another account, `disabled-not-adopted`).
+3. Apply manually, check the accounts in the Admin console, then grow the
+   scope in batches.
+4. Accounts that are not in the AD scope are never touched.
 
 ## Worked example
 

@@ -59,6 +59,11 @@ func SettingsOf(c *Config) syncapi.Settings {
 		Policy: syncapi.PolicySettings{
 			SuspendDisabled: c.Policy.SuspendDisabled == nil || *c.Policy.SuspendDisabled,
 			CreateDisabled:  c.Policy.CreateDisabled, Adopt: c.Policy.Adopt, RemoveUnmanagedMembers: c.Policy.RemoveUnmanagedMembers,
+			AdoptedOrgUnit:      nonDefault(c.Policy.AdoptedOrgUnit, plan.AdoptedKeep),
+			AdoptedEmail:        nonDefault(c.Policy.AdoptedEmail, plan.AdoptedKeep),
+			AdoptedNames:        nonDefault(c.Policy.AdoptedNames, plan.AdoptedIfSet),
+			AdoptedAttributes:   nonDefault(c.Policy.AdoptedAttributes, plan.AdoptedIfSet),
+			AdoptedGroupMembers: nonDefault(c.Policy.AdoptedGroupMembers, plan.AdoptedAddOnly),
 		},
 		Limits: syncapi.LimitSettings{
 			MaxCreates: l.MaxCreates, MaxSuspends: l.MaxSuspends, MaxUnsuspends: l.MaxUnsuspends, MaxRenames: l.MaxRenames,
@@ -198,6 +203,24 @@ func clone(s []string) []string {
 	return slices.Clone(s)
 }
 
+// nonDefault returns v, or "" when v is the default (or empty): defaults
+// travel as empty so clients that predate a field keep decoding.
+func nonDefault(v string, def plan.AdoptedMode) string {
+	if v = strings.TrimSpace(v); v == string(def) {
+		return ""
+	}
+	return v
+}
+
+// orFile returns the settings value, or the file's when it is empty (a
+// client that does not know the field never resets it).
+func orFile(v, file string) string {
+	if v = strings.TrimSpace(v); v != "" {
+		return v
+	}
+	return file
+}
+
 // trimList drops blank entries and surrounding spaces.
 func trimList(in []string) []string {
 	out := []string{}
@@ -241,7 +264,12 @@ func (c *Config) Overlay(s syncapi.Settings, version int64) (*Config, error) {
 	}
 	sd := s.Policy.SuspendDisabled
 	n.Policy = Policy{SuspendDisabled: &sd, CreateDisabled: s.Policy.CreateDisabled, Adopt: strings.TrimSpace(s.Policy.Adopt),
-		RemoveUnmanagedMembers: s.Policy.RemoveUnmanagedMembers}
+		RemoveUnmanagedMembers: s.Policy.RemoveUnmanagedMembers,
+		AdoptedOrgUnit:         orFile(s.Policy.AdoptedOrgUnit, c.Policy.AdoptedOrgUnit),
+		AdoptedEmail:           orFile(s.Policy.AdoptedEmail, c.Policy.AdoptedEmail),
+		AdoptedNames:           orFile(s.Policy.AdoptedNames, c.Policy.AdoptedNames),
+		AdoptedAttributes:      orFile(s.Policy.AdoptedAttributes, c.Policy.AdoptedAttributes),
+		AdoptedGroupMembers:    orFile(s.Policy.AdoptedGroupMembers, c.Policy.AdoptedGroupMembers)}
 	l := s.Limits
 	n.Limits = plan.Limits{MaxCreates: l.MaxCreates, MaxSuspends: l.MaxSuspends, MaxUnsuspends: l.MaxUnsuspends, MaxRenames: l.MaxRenames,
 		MaxUpdates: l.MaxUpdates, MaxGroupChanges: l.MaxGroupChanges, MaxMembershipChanges: l.MaxMembershipChanges,

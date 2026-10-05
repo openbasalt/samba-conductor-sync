@@ -291,3 +291,40 @@ with the latest write, so the suites never saw it.
     it was removed outside the sync. The cost is one read per missing link,
     normally zero. `internal/fakegoogle` can hide an object from lists
     (`HideFromList`) to test it.
+
+## Adopting an existing Google Workspace (2026-10-05)
+
+For a company that already has its users in Google and connects AD
+gradually: an adopted account must keep working exactly as before, and
+the sync only starts to follow it.
+
+46. Adoption is recorded: `links.adopted` (migration 003) and an
+    `externalIds` entry `<marker>-adopted` on the account, so the rules
+    below survive a lost state database (a relink by marker carries the
+    flag). Links made before this change count as created.
+47. Safe defaults, each with a switch in `[policy]`: the org unit is kept
+    (`adopted_org_unit = "keep"`), the primary address is never renamed
+    and a differing AD address is a warning (`adopted_email = "keep"`),
+    names and mapped fields are written only when AD has a value of its
+    own (`adopted_names`, `adopted_attributes` = `if-set`; a value from a
+    fallback template such as `{sAMAccountName}` does not count, and an
+    empty AD value never clears), adopted groups are add-only
+    (`adopted_group_members = "add-only"`, which also overrides
+    `remove_unmanaged_members`). `manage` treats the object like a created
+    one.
+48. A disabled AD user never adopts an account (`disabled-not-adopted`):
+    otherwise adoption would suspend a working account in the same run
+    only because AD has it disabled. After adoption, disabling the AD user
+    or leaving the scope suspends as for any managed account, and a
+    suspension by someone else is never undone.
+49. `delete-user` refuses adopted accounts.
+50. Only `CreateUser` sends a password. The fake records the field names of
+    every write and the tests assert that no other request carries
+    `password` or `changePasswordAtNextLogin`; the connector can write the
+    same field names (never values) to a request log
+    (`CONDUCTOR_SYNC_REQUEST_LOG`) for audits against a real tenant.
+51. The adopted rules travel in the management API as optional fields;
+    defaults are sent as empty strings and an empty value in an update
+    keeps the configuration file's value, so a conductor built before
+    these fields keeps working (decision 43's strict decoding never sees
+    them unless set).

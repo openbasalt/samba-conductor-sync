@@ -12,7 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/openbasalt/samba-conductor-sync/internal/alert"
@@ -98,6 +100,33 @@ func Open(ctx context.Context, path string, stderr io.Writer) (*Runtime, error) 
 	return New(cfg, st, stderr), nil
 }
 
+// RequestLogEnv names a file that receives the Google request log (field
+// names only, see google.Options.RequestLog), for audits of what a run
+// sent. Unset: no log.
+const RequestLogEnv = "CONDUCTOR_SYNC_REQUEST_LOG"
+
+var (
+	reqLogOnce sync.Once
+	reqLogFile io.Writer
+)
+
+// requestLog opens the request log once per process (append, 0600).
+func requestLog() io.Writer {
+	reqLogOnce.Do(func() {
+		path := os.Getenv(RequestLogEnv)
+		if path == "" {
+			return
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "conductor-sync: %s: %v (request log off)\n", RequestLogEnv, err)
+			return
+		}
+		reqLogFile = f
+	})
+	return reqLogFile
+}
+
 // New builds a runtime around an already open store.
 func New(cfg *config.Config, st *store.Store, stderr io.Writer) *Runtime {
 	if stderr == nil {
@@ -105,7 +134,7 @@ func New(cfg *config.Config, st *store.Store, stderr io.Writer) *Runtime {
 	}
 	r := &Runtime{File: cfg, Store: st, Stderr: stderr, Now: time.Now}
 	r.Connect = func(gc google.Config, key *google.ServiceAccountKey, write bool) (connector.Connector, error) {
-		return google.New(gc, key, write, google.Options{})
+		return google.New(gc, key, write, google.Options{RequestLog: requestLog()})
 	}
 	r.NewSource = func(c *config.Config) Source {
 		return &LazySource{Cfg: c, Password: func() (string, error) { return r.ADPassword(context.Background(), c) }}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -26,6 +27,19 @@ type Policy struct {
 	CreateDisabled         bool   `toml:"create_disabled"`
 	Adopt                  string `toml:"adopt"`
 	RemoveUnmanagedMembers bool   `toml:"remove_unmanaged_members"`
+	// Rules for adopted accounts and groups (see plan.Policy); empty =
+	// the safe default.
+	AdoptedOrgUnit      string `toml:"adopted_org_unit,omitempty"`
+	AdoptedEmail        string `toml:"adopted_email,omitempty"`
+	AdoptedNames        string `toml:"adopted_names,omitempty"`
+	AdoptedAttributes   string `toml:"adopted_attributes,omitempty"`
+	AdoptedGroupMembers string `toml:"adopted_group_members,omitempty"`
+}
+
+// adoptedRules pairs each adopted rule's key with its value.
+func (p *Policy) adoptedRules() map[string]*string {
+	return map[string]*string{"adopted_org_unit": &p.AdoptedOrgUnit, "adopted_email": &p.AdoptedEmail,
+		"adopted_names": &p.AdoptedNames, "adopted_attributes": &p.AdoptedAttributes, "adopted_group_members": &p.AdoptedGroupMembers}
 }
 
 // Alert is the [alert] section.
@@ -196,6 +210,12 @@ func (c *Config) finish() error {
 	default:
 		errs = append(errs, fmt.Errorf("policy.adopt %q: want never or email", c.Policy.Adopt))
 	}
+	for key, v := range c.Policy.adoptedRules() {
+		*v = strings.TrimSpace(*v)
+		if !plan.ValidAdopted(key, plan.AdoptedMode(*v)) {
+			errs = append(errs, fmt.Errorf("policy.%s %q: want one of %v", key, *v, plan.AdoptedChoices[key]))
+		}
+	}
 	c.Google.Defaults()
 	if err := c.Google.Validate(); err != nil {
 		errs = append(errs, err)
@@ -221,14 +241,21 @@ func (c *Config) finish() error {
 
 // PlanPolicy builds the plan's policy.
 func (c *Config) PlanPolicy() plan.Policy {
-	return plan.Policy{
+	p := plan.Policy{
 		Optional:               c.Rules.Optional(),
 		SuspendDisabled:        c.Policy.SuspendDisabled == nil || *c.Policy.SuspendDisabled,
 		CreateDisabled:         c.Policy.CreateDisabled,
 		Adopt:                  plan.AdoptMode(c.Policy.Adopt),
 		ManageGroups:           c.Rules.ManagesGroups() && len(c.Source.GroupBases) > 0,
 		RemoveUnmanagedMembers: c.Policy.RemoveUnmanagedMembers,
+		AdoptedOrgUnit:         plan.AdoptedMode(c.Policy.AdoptedOrgUnit),
+		AdoptedEmail:           plan.AdoptedMode(c.Policy.AdoptedEmail),
+		AdoptedNames:           plan.AdoptedMode(c.Policy.AdoptedNames),
+		AdoptedAttributes:      plan.AdoptedMode(c.Policy.AdoptedAttributes),
+		AdoptedGroupMembers:    plan.AdoptedMode(c.Policy.AdoptedGroupMembers),
 	}
+	p.Defaults()
+	return p
 }
 
 // StatePath is the SQLite database.

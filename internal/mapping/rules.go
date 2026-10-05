@@ -376,6 +376,25 @@ func (r *Rules) userAttrs(a Attrs) (model.UserAttrs, error) {
 	return out, nil
 }
 
+// FallbackFields reports which name fields a user's attributes render
+// through a fallback template (any template after the first of the list):
+// with the default lists, a given name taken from displayName or
+// sAMAccountName because givenName is empty. The plan never writes such a
+// value over an adopted account's name under the default policy.
+func (r *Rules) FallbackFields(a Attrs) map[model.UserField]bool {
+	out := map[model.UserField]bool{}
+	if _, i, err := r.givenName.RenderIndex(a, nil); err == nil && i > 0 {
+		out[model.FieldGivenName] = true
+	}
+	if _, i, err := r.familyName.RenderIndex(a, nil); err == nil && i > 0 {
+		out[model.FieldFamilyName] = true
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // OrgUnitFor returns the target org unit for a user at dn with the given
 // memberships, and which rule chose it: group rules by priority (the best
 // matching priority wins; two matches of that priority with different

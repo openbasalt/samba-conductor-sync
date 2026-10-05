@@ -202,7 +202,7 @@ type LinkRow struct {
 
 // Links returns every link of a connector.
 func (s *Store) Links(ctx context.Context, connector string) ([]LinkRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT connector, kind, source_id, target_id, key, source_dn, suspended_by_sync, suspended_at, created_at, updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT connector, kind, source_id, target_id, key, source_dn, suspended_by_sync, suspended_at, adopted, created_at, updated_at
 		FROM links WHERE connector = ? ORDER BY kind, key`, connector)
 	if err != nil {
 		return nil, err
@@ -212,12 +212,13 @@ func (s *Store) Links(ctx context.Context, connector string) ([]LinkRow, error) 
 	for rows.Next() {
 		var l LinkRow
 		var kind, suspAt, created, updated string
-		var susp int
-		if err := rows.Scan(&l.Connector, &kind, &l.SourceID, &l.TargetID, &l.Key, &l.SourceDN, &susp, &suspAt, &created, &updated); err != nil {
+		var susp, adopted int
+		if err := rows.Scan(&l.Connector, &kind, &l.SourceID, &l.TargetID, &l.Key, &l.SourceDN, &susp, &suspAt, &adopted, &created, &updated); err != nil {
 			return nil, err
 		}
 		l.Kind = model.Kind(kind)
 		l.SuspendedBySync = susp != 0
+		l.Adopted = adopted != 0
 		if suspAt != "" {
 			l.SuspendedAt = parseTS(suspAt)
 		}
@@ -244,15 +245,18 @@ func (s *Store) PutLink(ctx context.Context, connector string, l plan.Link, sour
 	if l.SuspendedBySync {
 		suspAt = now
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO links(connector, kind, source_id, target_id, key, source_dn, suspended_by_sync, suspended_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	// adopted is sticky for the same target: once adopted, an update that
+	// does not repeat the flag never turns the account into a created one.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO links(connector, kind, source_id, target_id, key, source_dn, suspended_by_sync, suspended_at, adopted, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(connector, kind, source_id) DO UPDATE SET target_id = excluded.target_id, key = excluded.key,
 			source_dn = CASE WHEN excluded.source_dn <> '' THEN excluded.source_dn ELSE links.source_dn END,
 			suspended_at = CASE WHEN excluded.suspended_by_sync = 0 THEN ''
 				WHEN links.suspended_by_sync = 1 AND links.target_id = excluded.target_id THEN links.suspended_at
 				ELSE excluded.suspended_at END,
+			adopted = CASE WHEN links.target_id = excluded.target_id THEN MAX(links.adopted, excluded.adopted) ELSE excluded.adopted END,
 			suspended_by_sync = excluded.suspended_by_sync, updated_at = excluded.updated_at`,
-		connector, string(l.Kind), l.SourceID, l.TargetID, model.NormalizeEmail(l.Key), sourceDN, boolInt(l.SuspendedBySync), suspAt, now, now); err != nil {
+		connector, string(l.Kind), l.SourceID, l.TargetID, model.NormalizeEmail(l.Key), sourceDN, boolInt(l.SuspendedBySync), suspAt, boolInt(l.Adopted), now, now); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -249,3 +249,18 @@ func FuzzTemplate(f *testing.F) {
 		_ = FoldASCII(val)
 	})
 }
+
+func TestFallbackFields(t *testing.T) {
+	r, err := Compile(Config{PrimaryEmail: []string{"{mail}"}, AllowedDomains: []string{"example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := MapAttrs{"givenname": "Ana", "sn": "Lima", "samaccountname": "ana.lima"}
+	if f := r.FallbackFields(full); len(f) != 0 {
+		t.Fatalf("own values reported as fallbacks: %v", f)
+	}
+	f := r.FallbackFields(MapAttrs{"displayname": "Ana Lima", "samaccountname": "ana.lima"})
+	if !f[model.FieldGivenName] || !f[model.FieldFamilyName] {
+		t.Fatalf("fallbacks %v", f)
+	}
+}

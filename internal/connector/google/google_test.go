@@ -230,3 +230,81 @@ func TestMembersIdempotent(t *testing.T) {
 		t.Fatalf("group rename %+v", g)
 	}
 }
+
+// TestRequestLogAndAdoptionMark: the request log names fields, never
+// values; an update never sends a password; adoption writes the marker and
+// the adoption mark and keeps foreign externalIds entries.
+func TestRequestLogAndAdoptionMark(t *testing.T) {
+	fake := fakegoogle.New("example.com")
+	srv := httptest.NewTLSServer(fake)
+	t.Cleanup(srv.Close)
+	fake.SetTokenURL(srv.URL + "/token")
+	key, err := google.ParseServiceAccountKey(fake.KeyJSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var log strings.Builder
+	c, err := google.New(google.Config{AdminSubject: fake.AdminSubject, KeyCredential: "x", APIBaseURL: srv.URL, RequestsPerSecond: 1e6},
+		key, true, google.Options{HTTPClient: srv.Client(), RequestLog: &log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	pre := fake.SeedUser(fakegoogle.User{PrimaryEmail: "ana@example.com", Name: map[string]any{"givenName": "Ana", "familyName": "Lima"},
+		ExternalIDs: []map[string]any{{"type": "custom", "customType": "hr", "value": "42"}}})
+	if _, err := c.Snapshot(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	a := attrs("ana@example.com")
+	a[model.FieldGivenName] = "Ana Maria"
+	if err := c.UpdateUser(ctx, pre.ID, "guid-1", a, []plan.Change{{Field: "given_name"}}, true); err != nil {
+		t.Fatal(err)
+	}
+	u, err := c.GetUser(ctx, pre.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Owner != "guid-1" || !u.Adopted {
+		t.Fatalf("owner %q adopted %v", u.Owner, u.Adopted)
+	}
+	got, _ := fake.User(pre.ID)
+	if len(got.ExternalIDs) != 3 || got.PasswordSet {
+		t.Fatalf("externalIds %v password %v", got.ExternalIDs, got.PasswordSet)
+	}
+	// A later update without claim keeps the mark.
+	a[model.FieldFamilyName] = "Souza"
+	if err := c.UpdateUser(ctx, pre.ID, "guid-1", a, []plan.Change{{Field: "family_name"}}, false); err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := c.GetUser(ctx, pre.ID); !u.Adopted {
+		t.Fatal("adoption mark lost")
+	}
+	if _, err := c.CreateUser(ctx, "guid-2", attrs("bia@example.com"), false); err != nil {
+		t.Fatal(err)
+	}
+	out := log.String()
+	for _, secret := range []string{"Ana Maria", "guid-1", "Souza", "Bearer", "customer="} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("request log carries %q:\n%s", secret, out)
+		}
+	}
+	var sawCreate bool
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		hasPw := strings.Contains(line, `"password"`)
+		create := strings.Contains(line, `"method":"POST"`) && strings.Contains(line, `"path":"/admin/directory/v1/users"`)
+		if hasPw && !create {
+			t.Fatalf("password outside a create: %s", line)
+		}
+		if create && hasPw && strings.Contains(line, `"changePasswordAtNextLogin"`) {
+			sawCreate = true
+		}
+	}
+	if !sawCreate {
+		t.Fatalf("create not logged with its fields:\n%s", out)
+	}
+	for _, w := range fake.Writes() {
+		if w.Method == http.MethodPatch && (strings.Contains(strings.Join(w.Fields, ","), "password") || strings.Contains(strings.Join(w.Fields, ","), "suspended")) {
+			t.Fatalf("update sent %v", w.Fields)
+		}
+	}
+}

@@ -7,7 +7,12 @@
 // Ownership: every account the sync creates or adopts carries an
 // externalIds entry {type: "custom", customType: <marker>, value: <AD
 // objectGUID>}. Accounts without it are never changed unless the operator
-// adopts them explicitly.
+// adopts them explicitly. An adopted account also carries {type: "custom",
+// customType: <marker>-adopted, value: <AD objectGUID>}, so the adopted
+// rules survive a loss of the state database.
+//
+// Passwords: only CreateUser sends one (random, never logged or stored).
+// No other request carries a password or changePasswordAtNextLogin.
 package google
 
 import (
@@ -17,6 +22,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -146,6 +152,12 @@ type Options struct {
 	Backoff, MaxBackoff time.Duration
 	Sleep               func(context.Context, time.Duration) error
 	Now                 func() time.Time
+	// RequestLog, when set, receives one JSON line per HTTP request: the
+	// time, method, path, status and the names of the top-level fields of
+	// the request body. Never a value, a token or a query string, so it
+	// can prove which fields a run sent (for example: no password on any
+	// update) without exposing data.
+	RequestLog io.Writer
 }
 
 // New builds a connector. write selects the write scopes (apply, delete);
@@ -213,7 +225,7 @@ func New(cfg Config, key *ServiceAccountKey, write bool, opt Options) (*Connecto
 		interval = time.Duration(float64(time.Second) / cfg.RequestsPerSecond)
 	}
 	c := &client{base: base, hc: hc, lim: &limiter{interval: interval}, maxRetries: cfg.MaxRetries,
-		backoff: backoff, maxBackoff: maxBackoff, now: now, sleep: sleep,
+		backoff: backoff, maxBackoff: maxBackoff, now: now, sleep: sleep, reqLog: opt.RequestLog,
 		tokens: &tokenSource{key: key, subject: cfg.AdminSubject, scopes: scopes, tokenURL: tokenURL, hc: hc, now: now}}
 	return &Connector{cfg: cfg, c: c, raw: map[string]*apiUser{}}, nil
 }
@@ -293,6 +305,8 @@ func (g *Connector) toModel(u *apiUser) model.TargetUser {
 		switch {
 		case str(e, "type") == "custom" && str(e, "customType") == g.cfg.Marker:
 			t.Owner = str(e, "value")
+		case str(e, "type") == "custom" && str(e, "customType") == g.adoptedType():
+			t.Adopted = true
 		case str(e, "type") == "organization" && t.Attrs[model.FieldEmployeeID] == "":
 			t.Attrs[model.FieldEmployeeID] = str(e, "value")
 		}
@@ -443,12 +457,19 @@ func (g *Connector) marker(sourceID string) map[string]any {
 	return map[string]any{"type": "custom", "customType": g.cfg.Marker, "value": sourceID}
 }
 
-// mergeExternalIDs keeps foreign entries, sets the marker and (when
-// managed) the employee ID.
-func (g *Connector) mergeExternalIDs(cur []map[string]any, sourceID string, employee *string) []map[string]any {
+// adoptedType is the customType of the adoption mark.
+func (g *Connector) adoptedType() string { return g.cfg.Marker + "-adopted" }
+
+// mergeExternalIDs keeps foreign entries, sets the marker, the adoption
+// mark (when adopted) and (when managed) the employee ID. An existing
+// adoption mark is kept as it is.
+func (g *Connector) mergeExternalIDs(cur []map[string]any, sourceID string, employee *string, adopted bool) []map[string]any {
 	var out []map[string]any
 	for _, e := range cur {
 		if str(e, "type") == "custom" && str(e, "customType") == g.cfg.Marker {
+			continue
+		}
+		if adopted && str(e, "type") == "custom" && str(e, "customType") == g.adoptedType() {
 			continue
 		}
 		if employee != nil && str(e, "type") == "organization" {
@@ -458,6 +479,9 @@ func (g *Connector) mergeExternalIDs(cur []map[string]any, sourceID string, empl
 	}
 	if sourceID != "" {
 		out = append(out, g.marker(sourceID))
+		if adopted {
+			out = append(out, map[string]any{"type": "custom", "customType": g.adoptedType(), "value": sourceID})
+		}
 	}
 	if employee != nil && *employee != "" {
 		out = append(out, map[string]any{"type": "organization", "value": *employee})
@@ -540,7 +564,7 @@ func (g *Connector) CreateUser(ctx context.Context, sourceID string, attrs model
 	if v, ok := attrs[model.FieldEmployeeID]; ok {
 		emp = &v
 	}
-	body["externalIds"] = g.mergeExternalIDs(nil, sourceID, emp)
+	body["externalIds"] = g.mergeExternalIDs(nil, sourceID, emp, false)
 	_, hasTitle := attrs[model.FieldTitle]
 	_, hasDept := attrs[model.FieldDepartment]
 	if (hasTitle && attrs[model.FieldTitle] != "") || (hasDept && attrs[model.FieldDepartment] != "") {
@@ -587,7 +611,9 @@ func (g *Connector) rawUser(ctx context.Context, id string) (*apiUser, error) {
 	return &fetched, nil
 }
 
-// UpdateUser implements connector.Connector.
+// UpdateUser implements connector.Connector. It sends only the changed
+// fields (and, on adoption, the ownership marker and the adoption mark):
+// never a password, changePasswordAtNextLogin or suspended.
 func (g *Connector) UpdateUser(ctx context.Context, targetID, sourceID string, attrs model.UserAttrs, changes []plan.Change, claim bool) error {
 	body := map[string]any{}
 	changed := map[model.UserField]bool{}
@@ -620,7 +646,7 @@ func (g *Connector) UpdateUser(ctx context.Context, targetID, sourceID string, a
 			if !claim {
 				owner = ownerOf(cur.ExternalIDs, g.cfg.Marker)
 			}
-			body["externalIds"] = g.mergeExternalIDs(cur.ExternalIDs, owner, emp)
+			body["externalIds"] = g.mergeExternalIDs(cur.ExternalIDs, owner, emp, claim)
 		}
 		if changed[model.FieldTitle] || changed[model.FieldDepartment] {
 			body["organizations"] = mergeOrganizations(cur.Organizations, attrs, changed[model.FieldTitle], changed[model.FieldDepartment])

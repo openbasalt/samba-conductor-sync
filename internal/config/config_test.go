@@ -237,3 +237,55 @@ func TestConnectionOverlayAndExport(t *testing.T) {
 		}
 	}
 }
+
+func TestAdoptedPolicy(t *testing.T) {
+	c, err := Load(write(t, minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := c.PlanPolicy()
+	if p.AdoptedOrgUnit != plan.AdoptedKeep || p.AdoptedEmail != plan.AdoptedKeep || p.AdoptedNames != plan.AdoptedIfSet ||
+		p.AdoptedAttributes != plan.AdoptedIfSet || p.AdoptedGroupMembers != plan.AdoptedAddOnly {
+		t.Fatalf("defaults %+v", p)
+	}
+	// Defaults travel as empty strings (older clients keep decoding).
+	s := SettingsOf(c)
+	if s.Policy.AdoptedOrgUnit != "" || s.Policy.AdoptedNames != "" || s.Policy.AdoptedGroupMembers != "" {
+		t.Fatalf("defaults sent: %+v", s.Policy)
+	}
+	_, err = Load(write(t, minimal+"[policy]\nadopted_org_unit = \"if-set\"\nadopted_names = \"never\"\nadopted_group_members = \"keep\"\n"))
+	for _, want := range []string{"policy.adopted_org_unit", "policy.adopted_names", "policy.adopted_group_members"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in %v", want, err)
+		}
+	}
+	c, err = Load(write(t, minimal+"[policy]\nadopt = \"email\"\nadopted_org_unit = \"manage\"\nadopted_names = \"keep\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := c.PlanPolicy(); p.AdoptedOrgUnit != plan.AdoptedManage || p.AdoptedNames != plan.AdoptedKeep || p.AdoptedEmail != plan.AdoptedKeep {
+		t.Fatalf("file values %+v", p)
+	}
+	s = SettingsOf(c)
+	if s.Policy.AdoptedOrgUnit != "manage" || s.Policy.AdoptedNames != "keep" {
+		t.Fatalf("settings %+v", s.Policy)
+	}
+	// A client that does not know the fields (empty) keeps the file's values.
+	s.Policy.AdoptedOrgUnit, s.Policy.AdoptedNames = "", ""
+	n, err := c.Overlay(s, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := n.PlanPolicy(); p.AdoptedOrgUnit != plan.AdoptedManage || p.AdoptedNames != plan.AdoptedKeep {
+		t.Fatalf("overlay reset the file values: %+v", p)
+	}
+	s.Policy.AdoptedOrgUnit = "keep"
+	n, err = c.Overlay(s, 3)
+	if err != nil || n.PlanPolicy().AdoptedOrgUnit != plan.AdoptedKeep {
+		t.Fatalf("overlay %v %+v", err, n)
+	}
+	s.Policy.AdoptedEmail = "rename"
+	if _, err := c.Overlay(s, 4); err == nil || !strings.Contains(err.Error(), "adopted_email") {
+		t.Fatalf("bad overlay value accepted: %v", err)
+	}
+}

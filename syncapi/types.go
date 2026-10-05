@@ -208,6 +208,17 @@ type PolicySettings struct {
 	CreateDisabled         bool   `json:"create_disabled"`
 	Adopt                  string `json:"adopt"`
 	RemoveUnmanagedMembers bool   `json:"remove_unmanaged_members"`
+	// Rules for adopted accounts and groups. Empty means the safe default
+	// (adopted_org_unit and adopted_email "keep", adopted_names and
+	// adopted_attributes "if-set", adopted_group_members "add-only"); a
+	// default is sent as empty, so clients that do not know these fields
+	// keep decoding results. An update that leaves one empty keeps the
+	// configuration file's value.
+	AdoptedOrgUnit      string `json:"adopted_org_unit,omitempty"`
+	AdoptedEmail        string `json:"adopted_email,omitempty"`
+	AdoptedNames        string `json:"adopted_names,omitempty"`
+	AdoptedAttributes   string `json:"adopted_attributes,omitempty"`
+	AdoptedGroupMembers string `json:"adopted_group_members,omitempty"`
 }
 
 // LimitSettings are the safety limits of scheduled runs (0 = none

@@ -14,7 +14,12 @@
 //     and left alone;
 //   - a suspension done outside the sync is never undone by it;
 //   - members the sync does not manage stay in managed groups unless the
-//     operator opts in to removing them.
+//     operator opts in to removing them;
+//   - an adopted account (one that existed before the sync and was taken
+//     over by address) keeps its org unit, its address and any name or
+//     field AD has no value for, unless the policy says otherwise; a
+//     disabled AD user never adopts an account; an adopted group loses no
+//     member by default.
 package plan
 
 import (
@@ -111,7 +116,10 @@ type Op struct {
 	// update and rename; the connector writes the changed ones.
 	Attrs model.UserAttrs `json:"attrs,omitempty"`
 	// Suspend creates the account suspended.
-	Suspend bool        `json:"suspend,omitempty"`
+	Suspend bool `json:"suspend,omitempty"`
+	// Adopted marks a relink of an account that carries the adoption mark
+	// (state lost after an adoption), so the link keeps the adopted rules.
+	Adopted bool        `json:"adopted,omitempty"`
 	Group   *GroupSpec  `json:"group,omitempty"`
 	Member  *MemberSpec `json:"member,omitempty"`
 }
@@ -173,6 +181,15 @@ const (
 	WarnUnmanagedMember   = "unmanaged-member-kept"
 	WarnDisabledNotCreate = "disabled-not-created"
 	WarnProtected         = "protected-account"
+	// WarnAdoptedAddress: AD renders another address for an adopted
+	// account or group; the address is kept (no rename) by default.
+	WarnAdoptedAddress = "adopted-address-kept"
+	// WarnAdoptDisabled: an existing account matches a disabled AD user;
+	// it is not adopted (and so not suspended) until the user is enabled.
+	WarnAdoptDisabled = "disabled-not-adopted"
+	// WarnAdoptedMemberKept: a member of an adopted group is not in the AD
+	// group; kept because adopted groups are add-only by default.
+	WarnAdoptedMemberKept = "adopted-member-kept"
 )
 
 // Plan error codes: a per-object problem the operator must fix; the object
@@ -251,6 +268,10 @@ type Link struct {
 	// SuspendedBySync is set when the sync suspended the target object; only
 	// then may the sync unsuspend it.
 	SuspendedBySync bool
+	// Adopted is set when the target object existed before the sync and was
+	// adopted by address (not created by the sync). The adopted rules of
+	// the policy apply to it on every run.
+	Adopted bool
 }
 
 // InFlight is a create that an interrupted run started but never
@@ -271,6 +292,23 @@ const (
 	AdoptEmail AdoptMode = "email"
 )
 
+// AdoptedMode decides how one aspect of an adopted account or group is
+// treated.
+type AdoptedMode string
+
+// Adopted modes. Not every aspect accepts every mode (see Policy).
+const (
+	// AdoptedKeep never changes the value on the target.
+	AdoptedKeep AdoptedMode = "keep"
+	// AdoptedIfSet writes the AD value only when AD has one of its own
+	// (not empty, not rendered by a fallback template).
+	AdoptedIfSet AdoptedMode = "if-set"
+	// AdoptedManage treats the adopted object like one the sync created.
+	AdoptedManage AdoptedMode = "manage"
+	// AdoptedAddOnly adds members to an adopted group but never removes one.
+	AdoptedAddOnly AdoptedMode = "add-only"
+)
+
 // Policy holds the behaviour switches of a plan.
 type Policy struct {
 	// Optional lists the optional user fields that are mapped (managed).
@@ -283,8 +321,73 @@ type Policy struct {
 	// ManageGroups turns group and membership sync on.
 	ManageGroups bool
 	// RemoveUnmanagedMembers removes members of managed groups that the
-	// sync does not manage (external addresses, manual additions).
+	// sync does not manage (external addresses, manual additions). It does
+	// not apply to adopted groups unless AdoptedGroupMembers is manage.
 	RemoveUnmanagedMembers bool
+
+	// Rules for adopted accounts and groups (Link.Adopted), on the
+	// adoption run and on every later run. Empty values take the safe
+	// defaults (Defaults).
+	//
+	// AdoptedOrgUnit: keep (default) or manage.
+	AdoptedOrgUnit AdoptedMode
+	// AdoptedEmail: keep (default: an adopted account or group is never
+	// renamed; a different AD address is a warning) or manage.
+	AdoptedEmail AdoptedMode
+	// AdoptedNames (given and family name; group name and description):
+	// if-set (default), keep or manage.
+	AdoptedNames AdoptedMode
+	// AdoptedAttributes (the mapped optional fields): if-set (default:
+	// an empty AD value never clears the Google value), keep or manage.
+	AdoptedAttributes AdoptedMode
+	// AdoptedGroupMembers: add-only (default) or manage.
+	AdoptedGroupMembers AdoptedMode
+}
+
+// Defaults fills the empty adopted rules with the safe defaults.
+func (p *Policy) Defaults() {
+	if p.Adopt == "" {
+		p.Adopt = AdoptNever
+	}
+	if p.AdoptedOrgUnit == "" {
+		p.AdoptedOrgUnit = AdoptedKeep
+	}
+	if p.AdoptedEmail == "" {
+		p.AdoptedEmail = AdoptedKeep
+	}
+	if p.AdoptedNames == "" {
+		p.AdoptedNames = AdoptedIfSet
+	}
+	if p.AdoptedAttributes == "" {
+		p.AdoptedAttributes = AdoptedIfSet
+	}
+	if p.AdoptedGroupMembers == "" {
+		p.AdoptedGroupMembers = AdoptedAddOnly
+	}
+}
+
+// AdoptedChoices lists the accepted modes of each adopted rule, by its
+// configuration key (policy.<key>).
+var AdoptedChoices = map[string][]AdoptedMode{
+	"adopted_org_unit":      {AdoptedKeep, AdoptedManage},
+	"adopted_email":         {AdoptedKeep, AdoptedManage},
+	"adopted_names":         {AdoptedIfSet, AdoptedKeep, AdoptedManage},
+	"adopted_attributes":    {AdoptedIfSet, AdoptedKeep, AdoptedManage},
+	"adopted_group_members": {AdoptedAddOnly, AdoptedManage},
+}
+
+// ValidAdopted reports whether v is accepted for the rule key ("" means
+// the default and is accepted).
+func ValidAdopted(key string, v AdoptedMode) bool {
+	if v == "" {
+		return true
+	}
+	for _, c := range AdoptedChoices[key] {
+		if c == v {
+			return true
+		}
+	}
+	return false
 }
 
 // Input is everything Compute needs.
@@ -323,9 +426,12 @@ type planner struct {
 	// this run ("" when created in this run) for users that are managed.
 	managedUser  map[string]string
 	managedGroup map[string]string
-	srcUser      map[string]*model.SourceUser
-	srcGroup     map[string]*model.SourceGroup
-	inflight     map[string]InFlight // kind|key
+	// userAddr is the address a managed user has after this run (an
+	// adopted account keeps its own by default).
+	userAddr map[string]string
+	srcUser  map[string]*model.SourceUser
+	srcGroup map[string]*model.SourceGroup
+	inflight map[string]InFlight // kind|key
 }
 
 // Compute builds the plan. It is deterministic: the same input yields the
@@ -337,11 +443,9 @@ func Compute(in Input) *Plan {
 		userLinkBySrc: map[string]Link{}, userLinkByTgt: map[string]Link{}, groupLinkBySrc: map[string]Link{}, groupLinkByTgt: map[string]Link{},
 		managedUser: map[string]string{}, managedGroup: map[string]string{},
 		srcUser: map[string]*model.SourceUser{}, srcGroup: map[string]*model.SourceGroup{}, inflight: map[string]InFlight{},
-		frozen: map[string]bool{},
+		frozen: map[string]bool{}, userAddr: map[string]string{},
 	}
-	if p.in.Policy.Adopt == "" {
-		p.in.Policy.Adopt = AdoptNever
-	}
+	p.in.Policy.Defaults()
 	p.index()
 	p.users()
 	if in.Policy.ManageGroups {
@@ -455,6 +559,57 @@ func (p *planner) desiredAttrs(su *model.SourceUser) model.UserAttrs {
 	return out
 }
 
+// desiredFor returns the desired managed fields of a user's account. For
+// an adopted account the adopted rules replace AD values by the account's
+// own where the policy keeps them; kept lists the fields whose AD value
+// differs but is not written (shown in the adoption's reason).
+func (p *planner) desiredFor(su *model.SourceUser, tu *model.TargetUser, adopted bool) (desired model.UserAttrs, kept []string) {
+	desired = p.desiredAttrs(su)
+	if !adopted || tu == nil {
+		return desired, nil
+	}
+	pol := p.in.Policy
+	keep := func(f model.UserField) {
+		if len(diffUser(tu.Attrs, desired, []model.UserField{f})) > 0 {
+			kept = append(kept, string(f))
+		}
+		desired[f] = tu.Attrs[f]
+	}
+	if pol.AdoptedOrgUnit != AdoptedManage {
+		keep(model.FieldOrgUnit)
+	}
+	if pol.AdoptedEmail != AdoptedManage && len(diffUser(tu.Attrs, desired, []model.UserField{model.FieldPrimaryEmail})) > 0 {
+		p.warnf(WarnAdoptedAddress, model.NormalizeEmail(tu.Attrs[model.FieldPrimaryEmail]),
+			"AD renders %s for this adopted account; its address is kept (policy.adopted_email = \"manage\" renames it)",
+			model.NormalizeEmail(desired[model.FieldPrimaryEmail]))
+		keep(model.FieldPrimaryEmail)
+	}
+	for _, f := range []model.UserField{model.FieldGivenName, model.FieldFamilyName} {
+		switch pol.AdoptedNames {
+		case AdoptedKeep:
+			keep(f)
+		case AdoptedIfSet:
+			if strings.TrimSpace(su.Attrs[f]) == "" || su.Fallback[f] {
+				keep(f)
+			}
+		}
+	}
+	for _, f := range model.OptionalUserFields {
+		if !pol.Optional[f] {
+			continue
+		}
+		switch pol.AdoptedAttributes {
+		case AdoptedKeep:
+			keep(f)
+		case AdoptedIfSet:
+			if strings.TrimSpace(su.Attrs[f]) == "" {
+				keep(f)
+			}
+		}
+	}
+	return desired, kept
+}
+
 func (p *planner) users() {
 	users := append([]model.SourceUser(nil), p.in.Users...)
 	sort.Slice(users, func(i, j int) bool {
@@ -563,9 +718,11 @@ func (p *planner) user(su *model.SourceUser, email string) {
 	var tu *model.TargetUser
 	var link Link
 	linked := false
+	adopted := false
 	if l, ok := p.userLinkBySrc[su.ID]; ok {
 		if t, ok := p.tUserByID[l.TargetID]; ok {
 			tu, link, linked = t, l, true
+			adopted = l.Adopted || t.Adopted
 		} else {
 			p.add(Op{Kind: UserUnlink, SourceID: su.ID, TargetID: l.TargetID, Key: l.Key,
 				Reason: "the linked target account no longer exists"})
@@ -579,11 +736,11 @@ func (p *planner) user(su *model.SourceUser, email string) {
 				return
 			}
 			tu = t
+			adopted = t.Adopted
 			p.add(Op{Kind: UserRelink, SourceID: su.ID, TargetID: t.ID, Key: t.Attrs[model.FieldPrimaryEmail],
-				Reason: "carries the ownership marker"})
+				Reason: "carries the ownership marker", Adopted: t.Adopted})
 		}
 	}
-	desired := p.desiredAttrs(su)
 	wantSuspended := !su.Enabled && p.in.Policy.SuspendDisabled
 	if tu == nil {
 		t, exists := p.tUserByEmail[email]
@@ -601,27 +758,42 @@ func (p *planner) user(su *model.SourceUser, email string) {
 			case p.in.Policy.Adopt != AdoptEmail:
 				p.warnf(WarnUnmanagedExists, email, "an account with this address exists and is not managed by the sync; left alone (adopt = \"email\" to take it over)")
 				return
+			case !su.Enabled:
+				// Adopting would suspend a working account only because AD
+				// has it disabled: wait until it is enabled in AD.
+				p.warnf(WarnAdoptDisabled, email, "an account with this address exists but the AD user is disabled; not adopted (and not suspended) until it is enabled in AD")
+				return
+			}
+			desired, kept := p.desiredFor(su, t, true)
+			reason := "adopt existing account by address"
+			if len(kept) > 0 {
+				reason += "; kept on the account: " + strings.Join(kept, ", ")
 			}
 			p.managedUser[su.ID] = t.ID
+			p.userAddr[su.ID] = model.NormalizeEmail(desired[model.FieldPrimaryEmail])
 			p.add(Op{Kind: UserAdopt, SourceID: su.ID, TargetID: t.ID, Key: email, Attrs: desired,
-				Changes: diffUser(t.Attrs, desired, p.managedFields()), Reason: "adopt existing account by address"})
-			p.suspension(su, t, Link{}, false, wantSuspended)
+				Changes: diffUser(t.Attrs, desired, p.managedFields()), Reason: reason})
+			p.suspension(su, t, email, Link{}, false, false)
 			return
 		}
 		if !su.Enabled && !p.in.Policy.CreateDisabled {
 			p.warnf(WarnDisabledNotCreate, email, "disabled in AD and not on the target; not created")
 			return
 		}
-		attrs := desired.Clone()
+		attrs := p.desiredAttrs(su)
 		reason := ""
 		if wantSuspended {
 			reason = "created suspended (disabled in AD)"
 		}
 		p.managedUser[su.ID] = ""
+		p.userAddr[su.ID] = email
 		p.add(Op{Kind: UserCreate, SourceID: su.ID, Key: email, Attrs: attrs, Reason: reason, Suspend: wantSuspended})
 		return
 	}
+	desired, _ := p.desiredFor(su, tu, adopted)
+	key := model.NormalizeEmail(desired[model.FieldPrimaryEmail])
 	p.managedUser[su.ID] = tu.ID
+	p.userAddr[su.ID] = key
 	if changes := diffUser(tu.Attrs, desired, p.managedFields()); len(changes) > 0 {
 		reason := ""
 		if hasChange(changes, string(model.FieldOrgUnit)) && su.Placement != "" {
@@ -631,18 +803,17 @@ func (p *planner) user(su *model.SourceUser, email string) {
 		if hasChange(changes, string(model.FieldPrimaryEmail)) {
 			kind = UserRename
 			if tu.Protected {
-				p.warnf(WarnProtected, email, "administrator account %s would be renamed; left alone", tu.Attrs[model.FieldPrimaryEmail])
-				p.suspension(su, tu, link, linked, wantSuspended)
+				p.warnf(WarnProtected, key, "administrator account %s would be renamed; left alone", tu.Attrs[model.FieldPrimaryEmail])
+				p.suspension(su, tu, key, link, linked, wantSuspended)
 				return
 			}
 		}
-		p.add(Op{Kind: kind, SourceID: su.ID, TargetID: tu.ID, Key: email, Changes: changes, Attrs: desired, Reason: reason})
+		p.add(Op{Kind: kind, SourceID: su.ID, TargetID: tu.ID, Key: key, Changes: changes, Attrs: desired, Reason: reason})
 	}
-	p.suspension(su, tu, link, linked, wantSuspended)
+	p.suspension(su, tu, key, link, linked, wantSuspended)
 }
 
-func (p *planner) suspension(su *model.SourceUser, tu *model.TargetUser, link Link, linked, want bool) {
-	email := model.NormalizeEmail(su.Attrs[model.FieldPrimaryEmail])
+func (p *planner) suspension(su *model.SourceUser, tu *model.TargetUser, email string, link Link, linked, want bool) {
 	switch {
 	case want && !tu.Suspended && tu.Protected:
 		p.warnf(WarnProtected, email, "administrator account is disabled in AD; not suspended by the sync")
@@ -692,8 +863,9 @@ func (p *planner) groups() {
 	// First pass: decide which groups are managed (and their target IDs) so
 	// nested group memberships can be resolved in the second pass.
 	type pending struct {
-		sg *model.SourceGroup
-		tg *model.TargetGroup
+		sg      *model.SourceGroup
+		tg      *model.TargetGroup
+		adopted bool
 	}
 	var managed []pending
 	for i := range groups {
@@ -713,9 +885,11 @@ func (p *planner) groups() {
 			continue
 		}
 		var tg *model.TargetGroup
+		adopted, adopting := false, false
 		if l, ok := p.groupLinkBySrc[sg.ID]; ok {
 			if t, ok := p.tGroupByID[l.TargetID]; ok {
 				tg = t
+				adopted = l.Adopted
 			} else {
 				p.add(Op{Kind: GroupUnlink, SourceID: sg.ID, TargetID: l.TargetID, Key: l.Key,
 					Reason: "the linked target group no longer exists"})
@@ -738,9 +912,7 @@ func (p *planner) groups() {
 						Reason: "created by an interrupted run"})
 				case p.in.Policy.Adopt == AdoptEmail:
 					tg = t
-					p.add(Op{Kind: GroupAdopt, SourceID: sg.ID, TargetID: t.ID, Key: email,
-						Group:  &GroupSpec{Email: email, Name: sg.Name, Description: sg.Description},
-						Reason: "adopt existing group by address"})
+					adopted, adopting = true, true
 				default:
 					p.warnf(WarnUnmanagedExists, email, "a group with this address exists and is not managed by the sync; left alone (adopt = \"email\" to take it over)")
 					continue
@@ -748,31 +920,37 @@ func (p *planner) groups() {
 			}
 		}
 		p.srcGroup[sg.ID] = sg
+		spec := GroupSpec{Email: email, Name: sg.Name, Description: sg.Description}
 		if tg == nil {
 			p.managedGroup[sg.ID] = ""
-			p.add(Op{Kind: GroupCreate, SourceID: sg.ID, Key: email,
-				Group: &GroupSpec{Email: email, Name: sg.Name, Description: sg.Description}})
+			p.add(Op{Kind: GroupCreate, SourceID: sg.ID, Key: email, Group: &spec})
 		} else {
 			p.managedGroup[sg.ID] = tg.ID
+			if adopted {
+				spec = p.adoptedGroupSpec(sg, tg, spec)
+			}
 			var changes []Change
-			if model.NormalizeEmail(tg.Email) != email {
-				changes = append(changes, Change{Field: "email", Old: tg.Email, New: email})
+			if model.NormalizeEmail(tg.Email) != spec.Email {
+				changes = append(changes, Change{Field: "email", Old: tg.Email, New: spec.Email})
 			}
-			if tg.Name != sg.Name {
-				changes = append(changes, Change{Field: "name", Old: tg.Name, New: sg.Name})
+			if tg.Name != spec.Name {
+				changes = append(changes, Change{Field: "name", Old: tg.Name, New: spec.Name})
 			}
-			if tg.Description != sg.Description {
-				changes = append(changes, Change{Field: "description", Old: tg.Description, New: sg.Description})
+			if tg.Description != spec.Description {
+				changes = append(changes, Change{Field: "description", Old: tg.Description, New: spec.Description})
 			}
-			if len(changes) > 0 {
-				p.add(Op{Kind: GroupUpdate, SourceID: sg.ID, TargetID: tg.ID, Key: email, Changes: changes,
-					Group: &GroupSpec{Email: email, Name: sg.Name, Description: sg.Description}})
+			switch {
+			case adopting:
+				p.add(Op{Kind: GroupAdopt, SourceID: sg.ID, TargetID: tg.ID, Key: email, Changes: changes, Group: &spec,
+					Reason: "adopt existing group by address"})
+			case len(changes) > 0:
+				p.add(Op{Kind: GroupUpdate, SourceID: sg.ID, TargetID: tg.ID, Key: email, Changes: changes, Group: &spec})
 			}
 		}
-		managed = append(managed, pending{sg, tg})
+		managed = append(managed, pending{sg, tg, adopted})
 	}
 	for _, m := range managed {
-		p.members(m.sg, m.tg)
+		p.members(m.sg, m.tg, m.adopted)
 	}
 	// Linked groups out of scope are kept: groups are never deleted, and
 	// their members are left as they are.
@@ -803,7 +981,31 @@ func memberKey(id, email string) string {
 	return "mail:" + model.NormalizeEmail(email)
 }
 
-func (p *planner) members(sg *model.SourceGroup, tg *model.TargetGroup) {
+// adoptedGroupSpec applies the adopted rules to an adopted group's desired
+// state: its address is kept unless adopted_email is manage, and its name
+// and description follow adopted_names.
+func (p *planner) adoptedGroupSpec(sg *model.SourceGroup, tg *model.TargetGroup, spec GroupSpec) GroupSpec {
+	pol := p.in.Policy
+	if pol.AdoptedEmail != AdoptedManage && model.NormalizeEmail(tg.Email) != spec.Email {
+		p.warnf(WarnAdoptedAddress, model.NormalizeEmail(tg.Email),
+			"AD renders %s for this adopted group; its address is kept (policy.adopted_email = \"manage\" renames it)", spec.Email)
+		spec.Email = model.NormalizeEmail(tg.Email)
+	}
+	switch pol.AdoptedNames {
+	case AdoptedKeep:
+		spec.Name, spec.Description = tg.Name, tg.Description
+	case AdoptedIfSet:
+		if strings.TrimSpace(sg.Name) == "" {
+			spec.Name = tg.Name
+		}
+		if strings.TrimSpace(sg.Description) == "" {
+			spec.Description = tg.Description
+		}
+	}
+	return spec
+}
+
+func (p *planner) members(sg *model.SourceGroup, tg *model.TargetGroup, adopted bool) {
 	email := model.NormalizeEmail(sg.Email)
 	type want struct {
 		kind     model.Kind
@@ -825,7 +1027,11 @@ func (p *planner) members(sg *model.SourceGroup, tg *model.TargetGroup) {
 			if !managed {
 				continue
 			}
-			w = want{model.KindUser, m.ID, tid, model.NormalizeEmail(su.Attrs[model.FieldPrimaryEmail])}
+			addr := p.userAddr[m.ID]
+			if addr == "" {
+				addr = model.NormalizeEmail(su.Attrs[model.FieldPrimaryEmail])
+			}
+			w = want{model.KindUser, m.ID, tid, addr}
 		case model.KindGroup:
 			g, ok := p.srcGroup[m.ID]
 			if !ok || m.ID == sg.ID {
@@ -899,6 +1105,15 @@ func (p *planner) members(sg *model.SourceGroup, tg *model.TargetGroup) {
 			managedObj, srcID, kind = true, l.SourceID, model.KindUser
 		} else if l, ok := p.groupLinkByTgt[m.ID]; ok && m.ID != "" {
 			managedObj, srcID, kind = true, l.SourceID, model.KindGroup
+		}
+		if adopted && p.in.Policy.AdoptedGroupMembers != AdoptedManage {
+			// An adopted group is add-only: nobody is removed, managed or not.
+			if managedObj {
+				p.warnf(WarnAdoptedMemberKept, email, "member %s is not in the AD group; kept (adopted group, policy.adopted_group_members = \"add-only\")", m.Email)
+			} else {
+				p.warnf(WarnUnmanagedMember, email, "member %s is not managed by the sync; kept", m.Email)
+			}
+			continue
 		}
 		if !managedObj && !p.in.Policy.RemoveUnmanagedMembers {
 			p.warnf(WarnUnmanagedMember, email, "member %s is not managed by the sync; kept", m.Email)

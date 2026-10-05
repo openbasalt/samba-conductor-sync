@@ -145,8 +145,12 @@ must change it at first sign-in: use SSO (P4 SAML) or an admin reset to
 give users access.
 
 Existing Google accounts with the same address are not touched (warning
-`unmanaged-exists`). To take them over, set `policy.adopt = "email"` for one
-reviewed run and set it back afterwards.
+`unmanaged-exists`). To take them over, set `policy.adopt = "email"`: either
+for one reviewed run, or for as long as AD users are being added to an
+existing Workspace. Adopted accounts keep their org unit, address, password
+and any name AD has no value for; see "Adopting an existing Google
+Workspace" in [mapping.md](mapping.md#adopting-an-existing-google-workspace)
+for every rule and its switch.
 
 ## 6. Schedule
 
@@ -207,8 +211,10 @@ when done. Google keeps deleted users restorable for about 20 days.
 - Partial failures are reported per object (`cs history --run RUN`);
   memberships that depend on a failed create are skipped, not failed.
 - State database lost: the next plan relinks every account through the
-  marker. Groups have no marker: run once with `adopt = "email"` after
-  reviewing the plan.
+  marker (an adopted account also carries its adoption mark, so it keeps
+  the adopted rules). Groups have no marker: run once with `adopt =
+  "email"` after reviewing the plan; they are then treated as adopted
+  (add-only members, see mapping.md).
 
 ## 10. Exit codes
 

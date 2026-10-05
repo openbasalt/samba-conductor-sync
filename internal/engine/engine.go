@@ -712,7 +712,7 @@ func (x *executor) hook(seq int, op plan.Op) error {
 func (x *executor) exec(ctx context.Context, seq int, op plan.Op) (string, error) {
 	switch op.Kind {
 	case plan.UserRelink:
-		return op.TargetID, x.putLink(ctx, plan.Link{Kind: model.KindUser, SourceID: op.SourceID, TargetID: op.TargetID, Key: op.Key})
+		return op.TargetID, x.putLink(ctx, plan.Link{Kind: model.KindUser, SourceID: op.SourceID, TargetID: op.TargetID, Key: op.Key, Adopted: op.Adopted})
 	case plan.GroupRelink:
 		return op.TargetID, x.putLink(ctx, plan.Link{Kind: model.KindGroup, SourceID: op.SourceID, TargetID: op.TargetID, Key: op.Key})
 	case plan.UserUnlink:
@@ -736,8 +736,11 @@ func (x *executor) exec(ctx context.Context, seq int, op plan.Op) (string, error
 			return "", err
 		}
 		l := x.links[linkKey(model.KindUser, op.SourceID)]
+		same := l.TargetID == op.TargetID
+		// An adoption records that the account was not created by the sync:
+		// the adopted rules of the policy apply to it from now on.
 		return op.TargetID, x.putLink(ctx, plan.Link{Kind: model.KindUser, SourceID: op.SourceID, TargetID: op.TargetID, Key: op.Key,
-			SuspendedBySync: l.SuspendedBySync && l.TargetID == op.TargetID})
+			SuspendedBySync: l.SuspendedBySync && same, Adopted: op.Kind == plan.UserAdopt || (l.Adopted && same)})
 	case plan.UserSuspend, plan.UserUnsuspend:
 		suspend := op.Kind == plan.UserSuspend
 		if err := x.conn.SetSuspended(ctx, op.TargetID, suspend); err != nil {
@@ -762,13 +765,19 @@ func (x *executor) exec(ctx context.Context, seq int, op plan.Op) (string, error
 		}
 		return id, x.putLink(ctx, plan.Link{Kind: model.KindGroup, SourceID: op.SourceID, TargetID: id, Key: op.Key})
 	case plan.GroupAdopt, plan.GroupUpdate:
-		if err := x.conn.UpdateGroup(ctx, op.TargetID, *op.Group); err != nil {
-			return "", err
+		// An adoption with nothing to change only records the link: the
+		// group is not written at all.
+		if op.Kind == plan.GroupUpdate || len(op.Changes) > 0 {
+			if err := x.conn.UpdateGroup(ctx, op.TargetID, *op.Group); err != nil {
+				return "", err
+			}
+			if err := x.hook(seq, op); err != nil {
+				return "", err
+			}
 		}
-		if err := x.hook(seq, op); err != nil {
-			return "", err
-		}
-		return op.TargetID, x.putLink(ctx, plan.Link{Kind: model.KindGroup, SourceID: op.SourceID, TargetID: op.TargetID, Key: op.Key})
+		l := x.links[linkKey(model.KindGroup, op.SourceID)]
+		return op.TargetID, x.putLink(ctx, plan.Link{Kind: model.KindGroup, SourceID: op.SourceID, TargetID: op.TargetID, Key: op.Key,
+			Adopted: op.Kind == plan.GroupAdopt || (l.Adopted && l.TargetID == op.TargetID)})
 	case plan.MemberAdd, plan.MemberRemove:
 		m := op.Member
 		gid := m.GroupTargetID
@@ -888,6 +897,8 @@ func (e *Engine) PreviewDelete(ctx context.Context, key string, minSuspended tim
 		return p, fmt.Errorf("%w: the account does not carry the sync's ownership marker for this source", ErrDeleteRefused)
 	case u.Protected:
 		return p, fmt.Errorf("%w: administrator accounts are never deleted by conductor-sync", ErrDeleteRefused)
+	case link.Adopted || u.Adopted:
+		return p, fmt.Errorf("%w: the account existed before the sync and was adopted; conductor-sync never deletes it (delete it in the Google Admin console if intended)", ErrDeleteRefused)
 	case !u.Suspended || !link.SuspendedBySync:
 		return p, fmt.Errorf("%w: only accounts the sync has suspended can be deleted (suspend first)", ErrDeleteRefused)
 	case p.SuspendedFor < minSuspended:

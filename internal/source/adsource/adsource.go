@@ -566,7 +566,7 @@ func (r *Reader) ReadWith(ctx context.Context, conn *ad.Conn) (*source.Result, e
 				enabled = false
 			}
 			res.Users = append(res.Users, model.SourceUser{ID: id, DN: e.DN, Account: u.SAMAccountName, Enabled: enabled, Attrs: mapped,
-				Placement: placement, Error: userErr})
+				Placement: placement, Error: userErr, Fallback: r.rules.FallbackFields(entryAttrs{e})})
 			dnIndex[DNKey(e.DN)] = model.MemberRef{Kind: model.KindUser, ID: id}
 		}
 	}
