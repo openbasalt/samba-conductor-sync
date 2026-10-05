@@ -235,8 +235,19 @@ Rollout:
    addresses that differ in case or domain, `alias-collision` when the AD
    address is an alias of another account, `disabled-not-adopted`).
 3. Apply manually, check the accounts in the Admin console, then grow the
-   scope in batches.
+   scope in batches. Adoptions count toward `max_updates` and
+   `max_touched_percent` (the share of the accounts already managed), so
+   an early batch is often above that share: apply it by hand with
+   `--override-limits` after reading the plan, or raise the limit for the
+   rollout and lower it afterwards.
 4. Accounts that are not in the AD scope are never touched.
+
+This procedure has been run against a real Google tenant with accounts in
+several org units, aliases, recovery e-mail and phone, titles, an account
+suspended by an administrator, a group with external members and accounts
+left out of AD: only the marker, the names AD has values for and the group
+name were written, and no request other than the one create carried a
+password.
 
 ## Worked example
 
