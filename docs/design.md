@@ -155,7 +155,8 @@ or a Google administrator reset.
   strictly in both directions: status; configuration get, validate,
   update, history, export, version and rollback; key and secret set or
   remove; connection test; mapping preview against real AD users; plan
-  and apply start; job, run and runs lookups; audit verify.
+  and apply start; job, run and runs lookups; audit verify; the import
+  plan (below).
 - Every request carries the acting AD user from conductor. Mutations are
   written to conductor-sync's hash-chained audit log with that actor;
   conductor audits the same actions in its own log.
@@ -176,6 +177,18 @@ or a Google administrator reset.
 - An AD connection change is saved only after a successful sign-in with
   it. Changing the ownership marker requires a typed confirmation.
 - Timer-driven runs do not need the API.
+
+## Import from Google Workspace
+
+For a company whose AD starts empty while its people are in Google,
+`import.plan` (and `conductor-sync import-plan`) reads the Google directory
+with the read-only scopes and returns the accounts and groups that
+conductor may create in AD, with filters (org units, group membership,
+suspended accounts and administrators left out by default) and limits.
+conductor-sync writes nothing anywhere for it; conductor creates the AD
+objects (mail = the Google address) with the administrator's credentials,
+after a preview, and the sync then adopts the Google accounts by address.
+See [import-from-google.md](import-from-google.md).
 
 ## Secrets
 

@@ -11,7 +11,9 @@ import (
 
 	"github.com/openbasalt/samba-conductor-sync/internal/app"
 	"github.com/openbasalt/samba-conductor-sync/internal/config"
+	"github.com/openbasalt/samba-conductor-sync/internal/connector"
 	"github.com/openbasalt/samba-conductor-sync/internal/engine"
+	"github.com/openbasalt/samba-conductor-sync/internal/gimport"
 	"github.com/openbasalt/samba-conductor-sync/internal/model"
 	"github.com/openbasalt/samba-conductor-sync/internal/plan"
 	"github.com/openbasalt/samba-conductor-sync/internal/store"
@@ -117,6 +119,8 @@ func (s *Server) dispatch(ctx context.Context, req syncapi.Request, params synca
 		return s.runsList(ctx, p)
 	case *syncapi.RunGetParams:
 		return s.runGet(ctx, p)
+	case *syncapi.ImportPlanParams:
+		return s.importPlan(ctx, req, p)
 	}
 	switch req.Op {
 	case syncapi.OpStatus:
@@ -816,6 +820,39 @@ func planOp(seq int, o plan.Op) syncapi.PlanOp {
 		op.MemberKind, op.MemberEmail = string(o.Member.Kind), o.Member.MemberEmail
 	}
 	return op
+}
+
+// ---- import from Google (read-only) ----
+
+// importPlan reads the Google directory with the read-only scopes and
+// returns what conductor may create in AD. It writes nothing anywhere (no
+// run, no plan, no Google request other than reads); the read itself is
+// audited with the actor, since it returns directory data.
+func (s *Server) importPlan(ctx context.Context, req syncapi.Request, p *syncapi.ImportPlanParams) (*syncapi.ImportPlan, error) {
+	cfg, err := s.rt.Effective(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pl, err := s.rt.ImportPlan(ctx, cfg, *p)
+	if err != nil {
+		s.audit(ctx, req, "api.import.plan", "google", app.ImportSummary(*p, nil)+"; "+err.Error(), store.ResultFailed)
+		if errors.Is(err, connector.ErrAuth) || errors.Is(err, app.ErrNoKey) {
+			return nil, &syncapi.Error{Code: syncapi.CodeUnavailable, Message: err.Error()}
+		}
+		if errors.Is(err, gimport.ErrGroupNotFound) {
+			return nil, errInvalid{msg: "a group named in the filters does not exist in Google", details: []string{err.Error()}}
+		}
+		return nil, err
+	}
+	// One answer must fit in a message.
+	if b, err := json.Marshal(pl); err != nil {
+		return nil, err
+	} else if len(b) > syncapi.MaxMessageSize-64<<10 {
+		return nil, errInvalid{msg: "the import plan is too large for one answer",
+			details: []string{"narrow the filters (org units, groups) or lower max_users and max_groups"}}
+	}
+	s.audit(ctx, req, "api.import.plan", "google", app.ImportSummary(*p, pl), store.ResultInfo)
+	return pl, nil
 }
 
 func (s *Server) auditVerify(ctx context.Context) (*syncapi.AuditState, error) {

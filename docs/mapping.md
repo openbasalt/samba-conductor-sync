@@ -164,7 +164,9 @@ A group that leaves the scope is kept as it is, with its members (warning
 ## Adopting an existing Google Workspace
 
 A company that already uses Google Workspace has accounts, org units,
-groups and aliases that people rely on. To connect AD to it, start with
+groups and aliases that people rely on. When its AD starts from scratch,
+the users and groups can first be created in AD from Google, once
+([import-from-google.md](import-from-google.md)). To connect AD to it, start with
 `policy.adopt = "email"` and add users to the AD scope gradually: each AD
 user whose rendered address equals an existing account's primary address
 is adopted. Adoption takes the account over; it does not recreate, reset,

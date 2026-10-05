@@ -259,7 +259,8 @@ func (s *Server) SeedGroup(g Group) *Group {
 	return &c
 }
 
-// AddMemberDirect adds a member without the API (manual additions).
+// AddMemberDirect adds a member without the API (manual additions): an
+// account, a group (nested) or an external address.
 func (s *Server) AddMemberDirect(groupID, email string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -267,6 +268,10 @@ func (s *Server) AddMemberDirect(groupID, email string) {
 	email = strings.ToLower(email)
 	if u := s.userByKey(email); u != nil {
 		g.members[u.ID] = &Member{ID: u.ID, Email: u.PrimaryEmail, Role: "MEMBER", Type: "USER"}
+		return
+	}
+	if sub := s.groupByKey(email); sub != nil {
+		g.members[sub.ID] = &Member{ID: sub.ID, Email: sub.Email, Role: "MEMBER", Type: "GROUP"}
 		return
 	}
 	g.members["ext:"+email] = &Member{Email: email, Role: "MEMBER", Type: "EXTERNAL"}

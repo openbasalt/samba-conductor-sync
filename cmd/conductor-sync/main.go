@@ -8,6 +8,9 @@
 //	conductor-sync history  [--limit N] [--run RUN]
 //	conductor-sync map      [--kind user|group] [KEY]
 //	conductor-sync delete-user KEY [--confirm ADDRESS]
+//	conductor-sync import-plan [--org-unit PATH]... [--sub-org-units] [--member-of GROUP]... [--include-suspended]
+//	                           [--include-admins] [--groups] [--group GROUP]... [--skip-empty-groups]
+//	                           [--max-users N] [--max-groups N] [--json]
 //	conductor-sync audit    verify | export
 //	conductor-sync check-config
 //	conductor-sync serve                     (the management API for conductor)
@@ -74,6 +77,8 @@ commands:
   history        recent runs, or one run's plan and journal (--run)
   map            the AD object <-> target object links
   delete-user    permanently delete one suspended, sync-owned account
+  import-plan    read Google (read-only) and list the users and groups conductor's
+                 "Import from Google Workspace" may create in AD (writes nothing)
   audit          verify | export the hash-chained audit log
   check-config   validate the configuration and the credentials
   serve          run the local management API used by conductor's web UI
@@ -102,6 +107,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "configuration file")
+	var imp importFlags
 	var (
 		all, asJSON, yes, override, scheduled bool
 		planRun                               int64
@@ -127,6 +133,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fs.StringVar(&kind, "kind", "", "user or group")
 	case "delete-user":
 		fs.StringVar(&confirm, "confirm", "", "the account's exact address (non-interactive confirmation)")
+	case "import-plan":
+		imp.register(fs)
+		fs.BoolVar(&asJSON, "json", false, "print the plan as JSON")
 	case "status", "audit", "check-config", "serve", "config", "key", "secret":
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", cmd)
@@ -181,6 +190,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			key = positional[0]
 		}
 		return mapCmd(ctx, cfg, st, kind, key, stdout, stderr)
+	case "import-plan":
+		return importPlanCmd(ctx, rt, cfg, imp.params(), asJSON, stdout, stderr)
 	case "audit":
 		if len(positional) != 1 {
 			fmt.Fprintln(stderr, "usage: conductor-sync audit verify|export")

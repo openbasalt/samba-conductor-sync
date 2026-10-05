@@ -57,11 +57,13 @@ conductor-sync serve
 conductor-sync config export | import [FILE] | history
 conductor-sync key set FILE | show
 conductor-sync secret status | set NAME | remove NAME
+conductor-sync import-plan [--org-unit PATH]... [--member-of ADDRESS]... [--groups] [--json] ...
 ```
 
 Operator guide: [`docs/usage-p5.md`](docs/usage-p5.md) (§13: the
 management API and conductor's sync section). Mapping reference:
-[`docs/mapping.md`](docs/mapping.md). Decisions:
+[`docs/mapping.md`](docs/mapping.md). Starting AD from an existing Google
+Workspace: [`docs/import-from-google.md`](docs/import-from-google.md). Decisions:
 [`docs/decisions.md`](docs/decisions.md). Configuration example:
 [`conductor-sync.toml.example`](conductor-sync.toml.example). systemd:
 [`deploy/systemd/`](deploy/systemd/).

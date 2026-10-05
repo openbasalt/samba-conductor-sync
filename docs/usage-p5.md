@@ -172,6 +172,7 @@ reorganization), apply it by hand with `--override-limits`.
 | `cs history [--run RUN]` | runs; one run's journal (each operation's status and error) or its plan |
 | `cs map [KEY]` | the link of an account or group: address, Google ID, AD objectGUID and DN, suspended by the sync |
 | `cs audit verify` / `export` | chain check; JSON lines for archiving |
+| `cs import-plan [--groups] [--json]` | read-only: the Google accounts and groups conductor's "Import from Google" may create in AD ([import-from-google.md](import-from-google.md)) |
 
 What AD changes do on Google:
 

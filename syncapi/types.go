@@ -673,3 +673,102 @@ func Confirmation(digest string, override bool) string {
 	}
 	return word + " " + digest
 }
+
+// ---- import from Google (import.plan) ----
+
+// Reasons an object of the Google directory is left out of an import plan.
+const (
+	ImportSkipSuspended = "suspended"          // suspended account (include_suspended adds it)
+	ImportSkipAdmin     = "admin"              // Google administrator (include_admins adds it)
+	ImportSkipManaged   = "managed"            // carries the sync's ownership marker: it already comes from AD
+	ImportSkipLimit     = "limit"              // beyond max_users or max_groups
+	ImportSkipEmpty     = "empty"              // group without members in the plan (skip_empty_groups)
+	ImportSkipFiltered  = "filtered"           // outside the org unit or group filters (counted only)
+	ImportWarnDomain    = "domain-not-allowed" // the address is not in the sync's allowed domains
+)
+
+// ImportUser is a Google account an administrator may create in AD. Mail
+// of the AD user = Email, so the sync adopts the account by address.
+type ImportUser struct {
+	Email      string `json:"email"`
+	GivenName  string `json:"given_name,omitempty"`
+	FamilyName string `json:"family_name,omitempty"`
+	// OrgUnit is the account's Google org unit (information: conductor
+	// places every imported user in the AD OU the administrator picks).
+	OrgUnit     string   `json:"org_unit"`
+	Suspended   bool     `json:"suspended,omitempty"`
+	Admin       bool     `json:"admin,omitempty"`
+	Aliases     []string `json:"aliases,omitempty"`
+	Title       string   `json:"title,omitempty"`
+	Department  string   `json:"department,omitempty"`
+	EmployeeID  string   `json:"employee_id,omitempty"`
+	PhoneWork   string   `json:"phone_work,omitempty"`
+	PhoneMobile string   `json:"phone_mobile,omitempty"`
+	Warnings    []string `json:"warnings,omitempty"`
+}
+
+// ImportGroup is a Google group an administrator may create in AD, with
+// its members that are in the same plan (users and nested groups, by
+// address). LeftOut counts the other members (external addresses,
+// accounts not in the plan).
+type ImportGroup struct {
+	Email       string   `json:"email"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Aliases     []string `json:"aliases,omitempty"`
+	Users       []string `json:"users,omitempty"`
+	Groups      []string `json:"groups,omitempty"`
+	LeftOut     int      `json:"left_out,omitempty"`
+	Warnings    []string `json:"warnings,omitempty"`
+}
+
+// ImportSkip is one object left out, with the reason (ImportSkip*).
+type ImportSkip struct {
+	Kind   string `json:"kind"` // user | group
+	Email  string `json:"email"`
+	Reason string `json:"reason"`
+}
+
+// ImportOrgUnit is one Google org unit with its number of accounts (for
+// the org unit filter).
+type ImportOrgUnit struct {
+	Path  string `json:"path"`
+	Users int    `json:"users"`
+}
+
+// ImportGroupRef is one Google group (for the group filters).
+type ImportGroupRef struct {
+	Email   string `json:"email"`
+	Name    string `json:"name"`
+	Members int    `json:"members"`
+}
+
+// ImportPlan is the result of import.plan: a read of the Google
+// directory, nothing written anywhere.
+type ImportPlan struct {
+	ReadAt time.Time `json:"read_at"`
+	// AllowedDomains and GroupAllowedDomains are the sync's (an address
+	// outside them is not adopted by the sync).
+	AllowedDomains      []string `json:"allowed_domains"`
+	GroupAllowedDomains []string `json:"group_allowed_domains"`
+	// Users and Groups are sorted by address.
+	Users  []ImportUser  `json:"users"`
+	Groups []ImportGroup `json:"groups"`
+	// Skipped lists objects left out (at most MaxImportSkipped; the
+	// counts are complete).
+	Skipped       []ImportSkip   `json:"skipped,omitempty"`
+	SkippedCounts map[string]int `json:"skipped_counts,omitempty"`
+	// UsersRead and GroupsRead count what the Google directory holds.
+	UsersRead  int `json:"users_read"`
+	GroupsRead int `json:"groups_read"`
+	// OrgUnits and AllGroups help choosing filters (AllGroups is empty
+	// when groups were not read; at most MaxImportGroupRefs).
+	OrgUnits  []ImportOrgUnit  `json:"org_units,omitempty"`
+	AllGroups []ImportGroupRef `json:"all_groups,omitempty"`
+}
+
+// Bounds of the informational lists of an import plan.
+const (
+	MaxImportSkipped   = 500
+	MaxImportGroupRefs = 1000
+)

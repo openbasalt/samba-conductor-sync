@@ -18,6 +18,9 @@
 //	GET  /_fake/writes        the write requests received
 //	POST /_fake/fault         queue a fakegoogle.Fault (JSON body)
 //	POST /_fake/latency?ms=N  delay every API request
+//	POST /_fake/seed          add accounts, groups (members by address) and
+//	                          org units directly, as an existing company's
+//	                          directory (JSON body, see seedRequest)
 package main
 
 import (
@@ -147,10 +150,74 @@ func main() {
 		}
 		fake.SetLatency(time.Duration(ms) * time.Millisecond)
 	})
+	mux.HandleFunc("/_fake/seed", func(w http.ResponseWriter, r *http.Request) {
+		var req seedRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if r.Method != http.MethodPost || dec.Decode(&req) != nil {
+			http.Error(w, "POST a seed request", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, seed(fake, req))
+	})
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}}
 	fmt.Fprintf(os.Stderr, "fakegws: %s (admin %s), files in %s\n", base, fake.AdminSubject, *dir)
 	log.Fatal(srv.ListenAndServeTLS("", ""))
+}
+
+// seedRequest is the body of POST /_fake/seed.
+type seedRequest struct {
+	OrgUnits []string          `json:"org_units"`
+	Users    []fakegoogle.User `json:"users"`
+	Groups   []seedGroup       `json:"groups"`
+}
+
+// seedGroup is a group with its members' addresses (accounts, groups or
+// external addresses).
+type seedGroup struct {
+	Email       string   `json:"email"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Aliases     []string `json:"aliases"`
+	Members     []string `json:"members"`
+}
+
+// seed stores the objects directly (no API request is recorded); accounts
+// and groups whose address already exists are left as they are.
+func seed(fake *fakegoogle.Server, req seedRequest) map[string]int {
+	out := map[string]int{}
+	for _, ou := range req.OrgUnits {
+		fake.AddOrgUnit(ou)
+	}
+	for _, u := range req.Users {
+		if _, exists := fake.User(u.PrimaryEmail); exists {
+			out["users_existing"]++
+			continue
+		}
+		fake.SeedUser(u)
+		out["users"]++
+	}
+	ids := map[string]string{}
+	for _, g := range req.Groups {
+		if _, _, exists := fake.GroupByEmail(g.Email); exists {
+			out["groups_existing"]++
+			continue
+		}
+		ids[g.Email] = fake.SeedGroup(fakegoogle.Group{Email: g.Email, Name: g.Name, Description: g.Description, Aliases: g.Aliases}).ID
+		out["groups"]++
+	}
+	for _, g := range req.Groups {
+		id, ok := ids[g.Email]
+		if !ok {
+			continue
+		}
+		for _, m := range g.Members {
+			fake.AddMemberDirect(id, m)
+			out["members"]++
+		}
+	}
+	return out
 }
 
 // loadKey reads the RSA key of an earlier sa-key.json.

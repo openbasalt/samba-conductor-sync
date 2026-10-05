@@ -22,6 +22,7 @@ import (
 	"github.com/openbasalt/samba-conductor-sync/internal/connector"
 	"github.com/openbasalt/samba-conductor-sync/internal/connector/google"
 	"github.com/openbasalt/samba-conductor-sync/internal/engine"
+	"github.com/openbasalt/samba-conductor-sync/internal/gimport"
 	"github.com/openbasalt/samba-conductor-sync/internal/model"
 	"github.com/openbasalt/samba-conductor-sync/internal/secret"
 	"github.com/openbasalt/samba-conductor-sync/internal/secretbox"
@@ -451,6 +452,35 @@ func (r *Runtime) Connector(ctx context.Context, cfg *config.Config, write bool)
 		return nil, err
 	}
 	return r.Connect(cfg.Google, k, write)
+}
+
+// ImportPlan reads the Google directory with the read-only scopes and
+// builds the plan of an import into AD (gimport). Nothing is written to
+// Google, AD or the state database; the caller audits the read.
+func (r *Runtime) ImportPlan(ctx context.Context, cfg *config.Config, p syncapi.ImportPlanParams) (*syncapi.ImportPlan, error) {
+	conn, err := r.Connector(ctx, cfg, false)
+	if err != nil {
+		return nil, err
+	}
+	snap, err := conn.Snapshot(ctx, gimport.NeedsGroups(p))
+	if err != nil {
+		return nil, err
+	}
+	return gimport.Build(snap, gimport.Options{ImportPlanParams: p, AllowedDomains: cfg.Mapping.AllowedDomains,
+		GroupAllowedDomains: cfg.Mapping.GroupAllowedDomains, Now: r.Now()})
+}
+
+// ImportSummary is one audit line for an import plan read: the filters
+// and the counts (no personal data).
+func ImportSummary(p syncapi.ImportPlanParams, pl *syncapi.ImportPlan) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "org_units=%v sub_org_units=%v member_of=%v include_suspended=%v include_admins=%v groups=%v group_emails=%v skip_empty_groups=%v max_users=%d max_groups=%d",
+		p.OrgUnits, p.SubOrgUnits, p.MemberOf, p.IncludeSuspended, p.IncludeAdmins, p.Groups, p.GroupEmails, p.SkipEmptyGroups, p.MaxUsers, p.MaxGroups)
+	if pl != nil {
+		fmt.Fprintf(&b, "; read %d users, %d groups; planned %d users, %d groups; skipped %v", pl.UsersRead, pl.GroupsRead,
+			len(pl.Users), len(pl.Groups), pl.SkippedCounts)
+	}
+	return b.String()
 }
 
 // Engine builds an engine for one actor with cfg.

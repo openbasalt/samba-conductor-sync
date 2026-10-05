@@ -68,6 +68,10 @@ const (
 	OpRunsList       Op = "runs.list"
 	OpRunGet         Op = "run.get"
 	OpAuditVerify    Op = "audit.verify"
+	// OpImportPlan reads the Google directory (read-only scopes, no write
+	// to Google or AD) and returns the users and groups an administrator
+	// may create in AD with conductor's "Import from Google Workspace".
+	OpImportPlan Op = "import.plan"
 )
 
 // Mutating reports whether the operation changes state (configuration,
@@ -173,6 +177,7 @@ var Allowlist = map[Op]func() Params{
 	OpRunsList:       func() Params { return &RunsListParams{} },
 	OpRunGet:         func() Params { return &RunGetParams{} },
 	OpAuditVerify:    func() Params { return &NoParams{} },
+	OpImportPlan:     func() Params { return &ImportPlanParams{} },
 }
 
 var (
@@ -572,6 +577,73 @@ func (p RunGetParams) Validate() error {
 		if _, ok := sectionKinds[p.Section]; !ok {
 			return fmt.Errorf("unknown section %q", p.Section)
 		}
+	}
+	return nil
+}
+
+// Import limits: the most users and groups one import plan returns, and
+// the most filter values of each kind.
+const (
+	MaxImportUsers   = 5000
+	MaxImportGroups  = 1000
+	maxImportFilters = 100
+)
+
+// ImportPlanParams select what import.plan returns. Every list is
+// optional; the defaults leave out suspended accounts and administrators.
+type ImportPlanParams struct {
+	// OrgUnits keeps users whose org unit path is one of these ("/Sales");
+	// with SubOrgUnits, also the org units below them. Empty: every org
+	// unit.
+	OrgUnits    []string `json:"org_units,omitempty"`
+	SubOrgUnits bool     `json:"sub_org_units,omitempty"`
+	// MemberOf keeps users that are members (nested membership counts) of
+	// at least one of these Google groups (addresses). Every group named
+	// must exist.
+	MemberOf []string `json:"member_of,omitempty"`
+	// IncludeSuspended and IncludeAdmins add suspended accounts and
+	// Google administrators (both left out by default).
+	IncludeSuspended bool `json:"include_suspended,omitempty"`
+	IncludeAdmins    bool `json:"include_admins,omitempty"`
+	// Groups adds Google groups to the plan: all of them, or only
+	// GroupEmails (every one named must exist). SkipEmptyGroups leaves out
+	// groups without any member in the plan.
+	Groups          bool     `json:"groups,omitempty"`
+	GroupEmails     []string `json:"group_emails,omitempty"`
+	SkipEmptyGroups bool     `json:"skip_empty_groups,omitempty"`
+	// MaxUsers and MaxGroups bound the plan (0: the defaults, 500 and
+	// 200). Objects beyond them are counted as skipped ("limit").
+	MaxUsers  int `json:"max_users,omitempty"`
+	MaxGroups int `json:"max_groups,omitempty"`
+}
+
+var (
+	importEmailRE = regexp.MustCompile(`^[^@\s\x00-\x1f]{1,64}@[A-Za-z0-9.-]{1,253}$`)
+	orgUnitRE     = regexp.MustCompile(`^/[^\x00-\x1f]{0,511}$`)
+)
+
+// Validate implements Params.
+func (p ImportPlanParams) Validate() error {
+	if p.MaxUsers < 0 || p.MaxUsers > MaxImportUsers || p.MaxGroups < 0 || p.MaxGroups > MaxImportGroups {
+		return fmt.Errorf("max_users 0-%d, max_groups 0-%d", MaxImportUsers, MaxImportGroups)
+	}
+	if len(p.OrgUnits) > maxImportFilters || len(p.MemberOf) > maxImportFilters || len(p.GroupEmails) > maxImportFilters {
+		return fmt.Errorf("at most %d org units, groups or group addresses", maxImportFilters)
+	}
+	for _, ou := range p.OrgUnits {
+		if !orgUnitRE.MatchString(ou) {
+			return fmt.Errorf("org unit %q: a path that starts with /", ou)
+		}
+	}
+	for _, list := range [][]string{p.MemberOf, p.GroupEmails} {
+		for _, e := range list {
+			if !importEmailRE.MatchString(e) {
+				return fmt.Errorf("%q is not a group address", e)
+			}
+		}
+	}
+	if len(p.GroupEmails) > 0 && !p.Groups {
+		return errors.New("group_emails needs groups")
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,16 @@ func TestCLIUsage(t *testing.T) {
 	}
 	if rc := run([]string{"apply", "--bogus"}, nil, &out, &errb); rc != exitUsage {
 		t.Fatalf("bad flag: %d", rc)
+	}
+	var f importFlags
+	fs := flag.NewFlagSet("import-plan", flag.ContinueOnError)
+	f.register(fs)
+	if err := fs.Parse([]string{"--org-unit", "/Sales", "--org-unit", "/IT", "--sub-org-units", "--groups", "--group", "a@example.com", "--max-users", "10"}); err != nil {
+		t.Fatal(err)
+	}
+	p := f.params()
+	if strings.Join(p.OrgUnits, ",") != "/Sales,/IT" || !p.SubOrgUnits || !p.Groups || len(p.GroupEmails) != 1 || p.MaxUsers != 10 || p.Validate() != nil {
+		t.Fatalf("import-plan flags: %+v", p)
 	}
 }
 
