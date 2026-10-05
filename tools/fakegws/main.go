@@ -21,6 +21,11 @@
 //	POST /_fake/seed          add accounts, groups (members by address) and
 //	                          org units directly, as an existing company's
 //	                          directory (JSON body, see seedRequest)
+//	POST /_fake/password-check  {"user": ID or address, "password": ...}:
+//	                          {"match": bool}, whether the account's last
+//	                          password is this one (the fake keeps a salted
+//	                          hash only), to check a self-service end to end
+//	POST /_fake/password-policy?min=N  the tenant's minimum password length
 package main
 
 import (
@@ -159,6 +164,27 @@ func main() {
 			return
 		}
 		writeJSON(w, seed(fake, req))
+	})
+	mux.HandleFunc("/_fake/password-check", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			User     string `json:"user"`
+			Password string `json:"password"`
+		}
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if r.Method != http.MethodPost || dec.Decode(&req) != nil {
+			http.Error(w, "POST {user, password}", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]bool{"match": fake.PasswordMatches(req.User, req.Password)})
+	})
+	mux.HandleFunc("/_fake/password-policy", func(w http.ResponseWriter, r *http.Request) {
+		n, err := strconv.Atoi(r.URL.Query().Get("min"))
+		if r.Method != http.MethodPost || err != nil || n < 0 || n > 100 {
+			http.Error(w, "POST ?min=N", http.StatusBadRequest)
+			return
+		}
+		fake.SetMinPasswordLength(n)
 	})
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}}

@@ -357,3 +357,29 @@ webhook, and replaces or removes the secrets. Decisions 38-43 in
 Upgrading from P5b: the protocol version is 2; upgrade conductor and
 conductor-sync together. Nothing else changes until a connection setting is
 saved from conductor.
+
+## 15. Connected accounts in conductor's self-service
+
+With the sync section enabled in conductor, every signed-in user has a
+"Connected accounts" page: their own account on the target, and, when
+allowed, Activate and New password. The policy is `[self_service]` (see
+`conductor-sync.toml.example` and [self-service.md](self-service.md)).
+
+- On-demand provisioning: set `activation = "self-service"`. The next plans
+  show the users without an account as `pending-activation` warnings
+  instead of creates; existing accounts are still adopted, updated and
+  suspended by the runs. A user who activates gets the account at once,
+  with a password shown once.
+- Password resets: `password_reset = "created"` by default (accounts the
+  sync created). Turn on `created-and-adopted` only when the users of
+  adopted accounts should manage those passwords from conductor; Google
+  administrators are always refused.
+- Typed passwords: `chosen_password = "allow"`, with `password_min_length`
+  at least the tenant's own minimum (otherwise Google refuses them and the
+  user is told).
+- The sync must be in `apply` mode; in dry-run nothing is written.
+- Review: the runs list shows each activation as a run (action
+  `activate`, trigger self-service); `conductor-sync audit` shows
+  `self.set_password` and the activations; the request log
+  (`CONDUCTOR_SYNC_REQUEST_LOG`) shows which requests carried a password
+  field (names only).

@@ -251,10 +251,15 @@ func (s *Store) LastRun(ctx context.Context, connector, action, trigger string) 
 	return &r, nil
 }
 
-// LatestPlanRun returns the newest run that recorded a plan (nil when none).
+// LatestPlanRun returns the newest run that recorded a plan (0 when none).
+// Self-service activations ("activate" runs) record the plan of one user's
+// create; they do not supersede a plan under review (that plan has no
+// operation for a user waiting for activation, so its digest stays the
+// same after the activation).
 func (s *Store) LatestPlanRun(ctx context.Context, connector string) (int64, error) {
 	var id int64
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(r.id), 0) FROM runs r JOIN plans p ON p.run_id = r.id WHERE r.connector = ?`, connector).Scan(&id)
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(r.id), 0) FROM runs r JOIN plans p ON p.run_id = r.id
+		WHERE r.connector = ? AND r.action <> 'activate'`, connector).Scan(&id)
 	return id, err
 }
 

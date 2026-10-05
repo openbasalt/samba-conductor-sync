@@ -526,7 +526,15 @@ func (r *Runtime) Engine(ctx context.Context, cfg *config.Config, actor string, 
 		Host:          engine.Hostname(),
 		Out:           out,
 		Now:           r.Now,
+		SelfService:   SelfServicePolicy(cfg),
 	}, nil
+}
+
+// SelfServicePolicy is the engine's view of [self_service].
+func SelfServicePolicy(cfg *config.Config) engine.SelfServicePolicy {
+	s := cfg.SelfService.Effective()
+	return engine.SelfServicePolicy{Activation: s.Activation, PasswordReset: s.PasswordReset, ChosenPassword: s.ChosenPassword == config.ChosenAllow,
+		PasswordMinLength: s.PasswordMinLength, MaxPerUserHour: s.MaxPerUserHour, MaxPerTargetHour: s.MaxPerTargetHour}
 }
 
 // LazySource loads the bind password only when the source is read.
@@ -566,6 +574,16 @@ func (l *LazySource) Read(ctx context.Context) (*source.Result, error) {
 		return nil, err
 	}
 	return r.Read(ctx)
+}
+
+// LookupUser implements source.UserLookup (one user by SID, for the
+// self-service operations).
+func (l *LazySource) LookupUser(ctx context.Context, sid string) (*source.UserScope, error) {
+	r, err := l.reader()
+	if err != nil {
+		return nil, err
+	}
+	return r.LookupUser(ctx, sid)
 }
 
 // Ping implements Source.

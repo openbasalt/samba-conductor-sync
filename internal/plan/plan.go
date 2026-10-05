@@ -190,6 +190,9 @@ const (
 	// WarnAdoptedMemberKept: a member of an adopted group is not in the AD
 	// group; kept because adopted groups are add-only by default.
 	WarnAdoptedMemberKept = "adopted-member-kept"
+	// WarnPendingActivation: with self-service activation, an eligible user
+	// without an account; it is created only when the user activates it.
+	WarnPendingActivation = "pending-activation"
 )
 
 // Plan error codes: a per-object problem the operator must fix; the object
@@ -342,6 +345,12 @@ type Policy struct {
 	AdoptedAttributes AdoptedMode
 	// AdoptedGroupMembers: add-only (default) or manage.
 	AdoptedGroupMembers AdoptedMode
+
+	// SelfServiceActivation: accounts are created only for users who
+	// activated theirs (Input.Activated); the others are reported as
+	// pending activation. Adoptions, updates and suspensions are not
+	// affected: only the creation of a new account waits for its user.
+	SelfServiceActivation bool
 }
 
 // Defaults fills the empty adopted rules with the safe defaults.
@@ -400,6 +409,9 @@ type Input struct {
 	Links        []Link
 	InFlight     []InFlight
 	Policy       Policy
+	// Activated lists the source users who activated their account
+	// (self-service activation): their accounts are created like any other.
+	Activated map[string]bool
 }
 
 type planner struct {
@@ -778,6 +790,12 @@ func (p *planner) user(su *model.SourceUser, email string) {
 		}
 		if !su.Enabled && !p.in.Policy.CreateDisabled {
 			p.warnf(WarnDisabledNotCreate, email, "disabled in AD and not on the target; not created")
+			return
+		}
+		if p.in.Policy.SelfServiceActivation && !p.in.Activated[su.ID] {
+			// The account is created when its user activates it (a license
+			// is used only then, and the user receives the password).
+			p.warnf(WarnPendingActivation, email, "%s has no account yet; it is created when the user activates it in conductor", su.Account)
 			return
 		}
 		attrs := p.desiredAttrs(su)

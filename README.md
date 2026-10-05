@@ -63,7 +63,9 @@ conductor-sync import-plan [--org-unit PATH]... [--member-of ADDRESS]... [--grou
 Operator guide: [`docs/usage-p5.md`](docs/usage-p5.md) (§13: the
 management API and conductor's sync section). Mapping reference:
 [`docs/mapping.md`](docs/mapping.md). Starting AD from an existing Google
-Workspace: [`docs/import-from-google.md`](docs/import-from-google.md). Decisions:
+Workspace: [`docs/import-from-google.md`](docs/import-from-google.md). Users
+activating their account or setting a new password from conductor's
+self-service: [`docs/self-service.md`](docs/self-service.md). Decisions:
 [`docs/decisions.md`](docs/decisions.md). Configuration example:
 [`conductor-sync.toml.example`](conductor-sync.toml.example). systemd:
 [`deploy/systemd/`](deploy/systemd/).

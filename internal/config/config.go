@@ -42,6 +42,96 @@ func (p *Policy) adoptedRules() map[string]*string {
 		"adopted_names": &p.AdoptedNames, "adopted_attributes": &p.AdoptedAttributes, "adopted_group_members": &p.AdoptedGroupMembers}
 }
 
+// SelfService is the [self_service] section: what a user may do with their
+// own account on the target from conductor's self-service ("Connected
+// accounts"). Empty values take the defaults (SelfServiceDefaults).
+type SelfService struct {
+	// Activation: "auto" (the sync runs create accounts) or "self-service"
+	// (an account is created only when its user activates it).
+	Activation string `toml:"activation,omitempty"`
+	// PasswordReset: "created" (only accounts the sync created),
+	// "created-and-adopted" or "off".
+	PasswordReset string `toml:"password_reset,omitempty"`
+	// ChosenPassword: "off" (generated passwords only) or "allow".
+	ChosenPassword string `toml:"chosen_password,omitempty"`
+	// PasswordMinLength raises the target's minimum (8-100).
+	PasswordMinLength int `toml:"password_min_length,omitempty"`
+	// MaxPerUserHour and MaxPerTargetHour bound the actions in any hour.
+	MaxPerUserHour   int `toml:"max_per_user_hour,omitempty"`
+	MaxPerTargetHour int `toml:"max_per_target_hour,omitempty"`
+}
+
+// Self-service values.
+const (
+	ActivationAuto        = "auto"
+	ActivationSelfService = "self-service"
+
+	ResetCreated           = "created"
+	ResetCreatedAndAdopted = "created-and-adopted"
+	ResetOff               = "off"
+
+	ChosenOff   = "off"
+	ChosenAllow = "allow"
+)
+
+// SelfServiceDefaults are the defaults of [self_service].
+var SelfServiceDefaults = SelfService{Activation: ActivationAuto, PasswordReset: ResetCreated, ChosenPassword: ChosenOff,
+	PasswordMinLength: 12, MaxPerUserHour: 3, MaxPerTargetHour: 30}
+
+// Effective returns the section with the defaults filled in.
+func (s SelfService) Effective() SelfService {
+	d := SelfServiceDefaults
+	if v := strings.TrimSpace(s.Activation); v != "" {
+		d.Activation = v
+	}
+	if v := strings.TrimSpace(s.PasswordReset); v != "" {
+		d.PasswordReset = v
+	}
+	if v := strings.TrimSpace(s.ChosenPassword); v != "" {
+		d.ChosenPassword = v
+	}
+	if s.PasswordMinLength != 0 {
+		d.PasswordMinLength = s.PasswordMinLength
+	}
+	if s.MaxPerUserHour != 0 {
+		d.MaxPerUserHour = s.MaxPerUserHour
+	}
+	if s.MaxPerTargetHour != 0 {
+		d.MaxPerTargetHour = s.MaxPerTargetHour
+	}
+	return d
+}
+
+func (s *SelfService) validate() []error {
+	var errs []error
+	s.Activation, s.PasswordReset, s.ChosenPassword = strings.TrimSpace(s.Activation), strings.TrimSpace(s.PasswordReset), strings.TrimSpace(s.ChosenPassword)
+	switch s.Activation {
+	case "", ActivationAuto, ActivationSelfService:
+	default:
+		errs = append(errs, fmt.Errorf("self_service.activation %q: want auto or self-service", s.Activation))
+	}
+	switch s.PasswordReset {
+	case "", ResetCreated, ResetCreatedAndAdopted, ResetOff:
+	default:
+		errs = append(errs, fmt.Errorf("self_service.password_reset %q: want created, created-and-adopted or off", s.PasswordReset))
+	}
+	switch s.ChosenPassword {
+	case "", ChosenOff, ChosenAllow:
+	default:
+		errs = append(errs, fmt.Errorf("self_service.chosen_password %q: want off or allow", s.ChosenPassword))
+	}
+	if s.PasswordMinLength != 0 && (s.PasswordMinLength < 8 || s.PasswordMinLength > 100) {
+		errs = append(errs, fmt.Errorf("self_service.password_min_length %d: 8-100", s.PasswordMinLength))
+	}
+	if s.MaxPerUserHour < 0 || s.MaxPerUserHour > 100 {
+		errs = append(errs, fmt.Errorf("self_service.max_per_user_hour %d: 1-100", s.MaxPerUserHour))
+	}
+	if s.MaxPerTargetHour < 0 || s.MaxPerTargetHour > 10000 {
+		errs = append(errs, fmt.Errorf("self_service.max_per_target_hour %d: 1-10000", s.MaxPerTargetHour))
+	}
+	return errs
+}
+
 // Alert is the [alert] section.
 type Alert struct {
 	WebhookURL string `toml:"webhook_url"`
@@ -95,15 +185,17 @@ type Config struct {
 	// the systemd unit, where $CREDENTIALS_DIRECTORY is not set).
 	CredentialsDir string `toml:"credentials_dir"`
 
-	Source   adsource.Config `toml:"source"`
-	Mapping  mapping.Config  `toml:"mapping"`
-	Policy   Policy          `toml:"policy"`
-	Limits   plan.Limits     `toml:"limits"`
-	Google   google.Config   `toml:"google"`
-	Alert    Alert           `toml:"alert"`
-	Delete   Delete          `toml:"delete"`
-	Schedule Schedule        `toml:"schedule"`
-	API      API             `toml:"api"`
+	Source  adsource.Config `toml:"source"`
+	Mapping mapping.Config  `toml:"mapping"`
+	Policy  Policy          `toml:"policy"`
+	// SelfService is the self-service policy of the target.
+	SelfService SelfService   `toml:"self_service"`
+	Limits      plan.Limits   `toml:"limits"`
+	Google      google.Config `toml:"google"`
+	Alert       Alert         `toml:"alert"`
+	Delete      Delete        `toml:"delete"`
+	Schedule    Schedule      `toml:"schedule"`
+	API         API           `toml:"api"`
 
 	// Rules is the compiled mapping (set by Load).
 	Rules *mapping.Rules `toml:"-"`
@@ -216,6 +308,7 @@ func (c *Config) finish() error {
 			errs = append(errs, fmt.Errorf("policy.%s %q: want one of %v", key, *v, plan.AdoptedChoices[key]))
 		}
 	}
+	errs = append(errs, c.SelfService.validate()...)
 	c.Google.Defaults()
 	if err := c.Google.Validate(); err != nil {
 		errs = append(errs, err)
@@ -253,6 +346,7 @@ func (c *Config) PlanPolicy() plan.Policy {
 		AdoptedNames:           plan.AdoptedMode(c.Policy.AdoptedNames),
 		AdoptedAttributes:      plan.AdoptedMode(c.Policy.AdoptedAttributes),
 		AdoptedGroupMembers:    plan.AdoptedMode(c.Policy.AdoptedGroupMembers),
+		SelfServiceActivation:  c.SelfService.Effective().Activation == ActivationSelfService,
 	}
 	p.Defaults()
 	return p

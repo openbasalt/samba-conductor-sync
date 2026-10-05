@@ -121,6 +121,12 @@ func (s *Server) dispatch(ctx context.Context, req syncapi.Request, params synca
 		return s.runGet(ctx, p)
 	case *syncapi.ImportPlanParams:
 		return s.importPlan(ctx, req, p)
+	case *syncapi.AccountStatusParams:
+		return s.accountStatus(ctx, req, p)
+	case *syncapi.AccountActivateParams:
+		return s.accountActivate(ctx, req, p)
+	case *syncapi.AccountSetPasswordParams:
+		return s.accountSetPassword(ctx, req, p)
 	}
 	switch req.Op {
 	case syncapi.OpStatus:
@@ -787,6 +793,10 @@ func (s *Server) runGet(ctx context.Context, p *syncapi.RunGetParams) (*syncapi.
 	switch {
 	case pl.Empty():
 		out.NotApply = "empty"
+	case r.Action == "activate":
+		// A self-service activation: one user's create, applied when the
+		// user asked for it; never applied again from here.
+		out.NotApply = "self-service"
 	case cfg.Mode != engine.ModeApply:
 		out.NotApply = "dry-run"
 	case latest != r.ID:
@@ -853,6 +863,78 @@ func (s *Server) importPlan(ctx context.Context, req syncapi.Request, p *syncapi
 	}
 	s.audit(ctx, req, "api.import.plan", "google", app.ImportSummary(*p, pl), store.ResultInfo)
 	return pl, nil
+}
+
+// ---- self-service (the actor's own account) ----
+
+// accountEngine builds the engine for a self-service call on target.
+func (s *Server) accountEngine(ctx context.Context, req syncapi.Request, target string) (*engine.Engine, error) {
+	cfg, err := s.rt.Effective(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if target != "" && target != cfg.Connector {
+		return nil, &syncapi.Error{Code: syncapi.CodeNotFound, Message: fmt.Sprintf("no target %q", target)}
+	}
+	return s.rt.Engine(ctx, cfg, actorName(req.Actor), nil)
+}
+
+// selfServiceErr maps the engine's self-service refusals: the reason code
+// travels as the first detail, for the client to translate.
+func selfServiceErr(err error) error {
+	var se *engine.SelfServiceError
+	switch {
+	case errors.As(err, &se):
+		return &syncapi.Error{Code: syncapi.CodeForbidden, Message: se.Message, Details: []string{se.Reason}}
+	case errors.Is(err, engine.ErrRateLimited):
+		return &syncapi.Error{Code: syncapi.CodeRateLimited, Message: err.Error()}
+	case errors.Is(err, connector.ErrAuth) || errors.Is(err, app.ErrNoKey) || errors.Is(err, connector.ErrRateLimited):
+		return &syncapi.Error{Code: syncapi.CodeUnavailable, Message: err.Error()}
+	}
+	return err
+}
+
+func (s *Server) accountStatus(ctx context.Context, req syncapi.Request, p *syncapi.AccountStatusParams) (*syncapi.AccountStatus, error) {
+	eng, err := s.accountEngine(ctx, req, p.Target)
+	if err != nil {
+		return nil, err
+	}
+	a, err := eng.AccountStatus(ctx, req.Actor.SID)
+	if err != nil {
+		return nil, selfServiceErr(err)
+	}
+	return &syncapi.AccountStatus{Targets: []syncapi.TargetAccount{*a}}, nil
+}
+
+// accountActivate creates the actor's account now. The generated password
+// (if any) is in the result only: never in the audit or the log.
+func (s *Server) accountActivate(ctx context.Context, req syncapi.Request, p *syncapi.AccountActivateParams) (*syncapi.AccountActionResult, error) {
+	eng, err := s.accountEngine(ctx, req, p.Target)
+	if err != nil {
+		return nil, err
+	}
+	res, err := eng.Activate(ctx, req.Actor.SID, p.PasswordChoice)
+	if err != nil {
+		return nil, selfServiceErr(err)
+	}
+	s.audit(ctx, req, "api.account.activate", p.Target, fmt.Sprintf("account %s created; password %s; %d warnings", res.Account.Address, p.Mode,
+		len(res.Warnings)), store.ResultOK)
+	return res, nil
+}
+
+// accountSetPassword sets a new password on the actor's linked account.
+func (s *Server) accountSetPassword(ctx context.Context, req syncapi.Request, p *syncapi.AccountSetPasswordParams) (*syncapi.AccountActionResult, error) {
+	eng, err := s.accountEngine(ctx, req, p.Target)
+	if err != nil {
+		return nil, err
+	}
+	res, err := eng.SetPassword(ctx, req.Actor.SID, p.PasswordChoice)
+	if err != nil {
+		return nil, selfServiceErr(err)
+	}
+	s.audit(ctx, req, "api.account.set_password", p.Target, fmt.Sprintf("account %s (%s); password %s", res.Account.Address, res.Account.Origin, p.Mode),
+		store.ResultOK)
+	return res, nil
 }
 
 func (s *Server) auditVerify(ctx context.Context) (*syncapi.AuditState, error) {

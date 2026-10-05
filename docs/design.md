@@ -119,10 +119,12 @@ the target.
 Passwords are not synchronized: Samba keeps only hashes that Google cannot
 accept. New Google accounts get a random 32-character password generated
 in the connector, sent once, never logged or stored, with a change
-required at next sign-in. That create is the only request that carries a
-password: updates, adoptions, suspensions and renames never send
+required at next sign-in. That create is the only request of a run that
+carries a password: updates, adoptions, suspensions and renames never send
 `password` or `changePasswordAtNextLogin`, so an existing or adopted
-account keeps its password. The optional request log
+account keeps its password. Outside the runs, a user can activate their
+account or set a new password from conductor's self-service (below); that
+password is the user's own, sent once and never stored. The optional request log
 (`CONDUCTOR_SYNC_REQUEST_LOG=<file>`: method, path, status and the names
 of the body's top-level fields, never values) lets an operator verify it. The intended sign-in is SSO through the SAML
 provider of
@@ -156,7 +158,7 @@ or a Google administrator reset.
   update, history, export, version and rollback; key and secret set or
   remove; connection test; mapping preview against real AD users; plan
   and apply start; job, run and runs lookups; audit verify; the import
-  plan (below).
+  plan and the self-service account operations (below).
 - Every request carries the acting AD user from conductor. Mutations are
   written to conductor-sync's hash-chained audit log with that actor;
   conductor audits the same actions in its own log.
@@ -189,6 +191,22 @@ conductor-sync writes nothing anywhere for it; conductor creates the AD
 objects (mail = the Google address) with the administrator's credentials,
 after a preview, and the sync then adopts the Google accounts by address.
 See [import-from-google.md](import-from-google.md).
+
+## Self-service: connected accounts
+
+conductor's self-service shows a signed-in user their own account on each
+target and, when the target's connector supports it and the policy allows
+it, lets them activate it (on-demand provisioning) or set a new password,
+generated and shown once or typed by them. The management API operations
+`account.status`, `account.activate` and `account.set_password` always act
+on the request's actor, found in AD by SID. With `self_service.activation
+= "self-service"` the runs create accounts only for users who activated
+theirs; an activation applies, as a journaled run of its own, the create
+that a run's plan computes for that user. Resets apply only to the user's
+own linked account carrying the marker, never to target administrators,
+and to adopted accounts only when the policy says so. Actions are rate
+limited per user and per target, and audited in conductor and here without
+any password. See [self-service.md](self-service.md).
 
 ## Secrets
 

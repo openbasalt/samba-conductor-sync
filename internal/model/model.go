@@ -64,6 +64,9 @@ type SourceUser struct {
 	// DN and Account are for display only (they change on rename/move).
 	DN      string
 	Account string
+	// SID is the AD objectSid (string form); conductor's self-service
+	// identifies its signed-in user by it.
+	SID string
 	// Enabled is false for a disabled source account; disabled users are
 	// suspended on the target (when the policy says so).
 	Enabled bool

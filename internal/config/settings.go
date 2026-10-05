@@ -70,10 +70,62 @@ func SettingsOf(c *Config) syncapi.Settings {
 			MaxUpdates: l.MaxUpdates, MaxGroupChanges: l.MaxGroupChanges, MaxMembershipChanges: l.MaxMembershipChanges,
 			MaxTouchedPercent: l.MaxTouchedPercent, MinSourceUsers: l.MinSourceUsers, MaxSourceDropPercent: l.MaxSourceDropPercent,
 		},
-		Google:     syncapi.GoogleSettings{Customer: c.Google.Customer, AdminSubject: c.Google.AdminSubject, MemberRole: c.Google.MemberRole},
-		Schedule:   syncapi.ScheduleSettings{Interval: c.Schedule.Interval.Duration.String()},
-		Connection: ConnectionOf(c),
+		Google:      syncapi.GoogleSettings{Customer: c.Google.Customer, AdminSubject: c.Google.AdminSubject, MemberRole: c.Google.MemberRole},
+		Schedule:    syncapi.ScheduleSettings{Interval: c.Schedule.Interval.Duration.String()},
+		Connection:  ConnectionOf(c),
+		SelfService: SelfServiceOf(c),
 	}
+}
+
+// SelfServiceOf extracts the self-service policy: nil when every value is
+// the default (defaults travel as empty, so clients that predate the field
+// keep decoding).
+func SelfServiceOf(c *Config) *syncapi.SelfServiceSettings {
+	e, d := c.SelfService.Effective(), SelfServiceDefaults
+	s := syncapi.SelfServiceSettings{}
+	if e.Activation != d.Activation {
+		s.Activation = e.Activation
+	}
+	if e.PasswordReset != d.PasswordReset {
+		s.PasswordReset = e.PasswordReset
+	}
+	if e.ChosenPassword != d.ChosenPassword {
+		s.ChosenPassword = e.ChosenPassword
+	}
+	if e.PasswordMinLength != d.PasswordMinLength {
+		s.PasswordMinLength = e.PasswordMinLength
+	}
+	if e.MaxPerUserHour != d.MaxPerUserHour {
+		s.MaxPerUserHour = e.MaxPerUserHour
+	}
+	if e.MaxPerTargetHour != d.MaxPerTargetHour {
+		s.MaxPerTargetHour = e.MaxPerTargetHour
+	}
+	if s == (syncapi.SelfServiceSettings{}) {
+		return nil
+	}
+	return &s
+}
+
+// overlaySelfService applies the settings' self-service policy: nil keeps
+// the file's section, and so does each empty value.
+func overlaySelfService(file SelfService, s *syncapi.SelfServiceSettings) SelfService {
+	if s == nil {
+		return file
+	}
+	out := SelfService{Activation: orFile(s.Activation, file.Activation), PasswordReset: orFile(s.PasswordReset, file.PasswordReset),
+		ChosenPassword: orFile(s.ChosenPassword, file.ChosenPassword), PasswordMinLength: s.PasswordMinLength,
+		MaxPerUserHour: s.MaxPerUserHour, MaxPerTargetHour: s.MaxPerTargetHour}
+	if out.PasswordMinLength == 0 {
+		out.PasswordMinLength = file.PasswordMinLength
+	}
+	if out.MaxPerUserHour == 0 {
+		out.MaxPerUserHour = file.MaxPerUserHour
+	}
+	if out.MaxPerTargetHour == 0 {
+		out.MaxPerTargetHour = file.MaxPerTargetHour
+	}
+	return out
 }
 
 // ConnectionOf extracts the connection settings.
@@ -270,6 +322,7 @@ func (c *Config) Overlay(s syncapi.Settings, version int64) (*Config, error) {
 		AdoptedNames:           orFile(s.Policy.AdoptedNames, c.Policy.AdoptedNames),
 		AdoptedAttributes:      orFile(s.Policy.AdoptedAttributes, c.Policy.AdoptedAttributes),
 		AdoptedGroupMembers:    orFile(s.Policy.AdoptedGroupMembers, c.Policy.AdoptedGroupMembers)}
+	n.SelfService = overlaySelfService(c.SelfService, s.SelfService)
 	l := s.Limits
 	n.Limits = plan.Limits{MaxCreates: l.MaxCreates, MaxSuspends: l.MaxSuspends, MaxUnsuspends: l.MaxUnsuspends, MaxRenames: l.MaxRenames,
 		MaxUpdates: l.MaxUpdates, MaxGroupChanges: l.MaxGroupChanges, MaxMembershipChanges: l.MaxMembershipChanges,

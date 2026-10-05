@@ -188,7 +188,9 @@ What adoption never does:
 - send a password or `changePasswordAtNextLogin`. Only an account the sync
   creates gets a password (random, sent once, never stored). An adopted
   account keeps its password, its sign-in method and its 2-Step
-  Verification;
+  Verification. Only its own user can change that password from conductor's
+  self-service, and only with `self_service.password_reset =
+  "created-and-adopted"` ([self-service.md](self-service.md));
 - change aliases, recovery e-mail or phone, photos, licenses, admin roles,
   or any field that is not mapped;
 - suspend the account. An AD user that is disabled (or past

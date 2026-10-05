@@ -390,6 +390,12 @@ func (g *scopeGroups) missing() []string {
 }
 
 func (r *Reader) resolveGroups(ctx context.Context, conn *ad.Conn) (*scopeGroups, error) {
+	return r.resolveGroupsWith(ctx, conn, func(rg *refGroup) error { return r.groupUserMembers(ctx, conn, rg) })
+}
+
+// resolveGroupsWith resolves the referenced groups; members fills each
+// found group's members (all of them, or only the one user of a lookup).
+func (r *Reader) resolveGroupsWith(ctx context.Context, conn *ad.Conn, members func(*refGroup) error) (*scopeGroups, error) {
 	g := &scopeGroups{byKey: map[string]*refGroup{}}
 	get := func(ref string) (*refGroup, error) {
 		key, err := mapping.GroupKey(ref)
@@ -405,7 +411,7 @@ func (r *Reader) resolveGroups(ctx context.Context, conn *ad.Conn) (*scopeGroups
 			return nil, err
 		}
 		if rg.found {
-			if err := r.groupUserMembers(ctx, conn, rg); err != nil {
+			if err := members(rg); err != nil {
 				return nil, err
 			}
 		}
@@ -565,7 +571,7 @@ func (r *Reader) ReadWith(ctx context.Context, conn *ad.Conn) (*source.Result, e
 			if enabled && r.cfg.expiredAsDisabled() && u.AccountExpired(now) {
 				enabled = false
 			}
-			res.Users = append(res.Users, model.SourceUser{ID: id, DN: e.DN, Account: u.SAMAccountName, Enabled: enabled, Attrs: mapped,
+			res.Users = append(res.Users, model.SourceUser{ID: id, DN: e.DN, Account: u.SAMAccountName, SID: u.SID.String(), Enabled: enabled, Attrs: mapped,
 				Placement: placement, Error: userErr, Fallback: r.rules.FallbackFields(entryAttrs{e})})
 			dnIndex[DNKey(e.DN)] = model.MemberRef{Kind: model.KindUser, ID: id}
 		}
@@ -623,6 +629,120 @@ func (r *Reader) ReadWith(ctx context.Context, conn *ad.Conn) (*source.Result, e
 		res.Groups = append(res.Groups, groups[i].g)
 	}
 	return res, nil
+}
+
+// LookupUser reads one user by SID with the same scope rules as Read (the
+// user bases, the excluded bases, the include and exclude groups, critical
+// objects left out) and maps it. A SID that is not a user below the user
+// bases returns a scope without a user. Every referenced group must resolve,
+// as for Read.
+func (r *Reader) LookupUser(ctx context.Context, userSID string) (*source.UserScope, error) {
+	s, err := sid.Parse(userSID)
+	if err != nil {
+		return nil, fmt.Errorf("source: SID %q: %w", userSID, err)
+	}
+	conn, closeFn, err := r.connect(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("source: connect: %w", err)
+	}
+	defer closeFn()
+	attrs := union(ad.UserAttributes, r.rules.UserAttributes()...)
+	filter := escape.And(userClass, notCritical, escape.EqBytes("objectSid", s.Bytes()))
+	for _, base := range r.cfg.UserBases {
+		entries, err := conn.SearchAll(ctx, ad.SearchRequest{BaseDN: base, Filter: filter, Attributes: attrs, Limit: 2})
+		if err != nil {
+			return nil, fmt.Errorf("source: user %s below %s: %w", userSID, base, err)
+		}
+		if len(entries) == 0 {
+			continue
+		}
+		e := entries[0]
+		u := ad.UserFromEntry(e)
+		id := u.GUID.String()
+		if u.GUID.IsZero() {
+			return &source.UserScope{Reason: "no objectGUID"}, nil
+		}
+		enabled := u.Enabled()
+		if enabled && r.cfg.expiredAsDisabled() && u.AccountExpired(r.now()) {
+			enabled = false
+		}
+		su := &model.SourceUser{ID: id, DN: e.DN, Account: u.SAMAccountName, SID: u.SID.String(), Enabled: enabled}
+		out := &source.UserScope{User: su}
+		// The referenced groups, with this user's (nested) membership only:
+		// the groups above the user (memberOf, walked upwards) instead of
+		// every member of every group.
+		above, err := r.groupsAbove(ctx, conn, e.GetAttributeValues("memberOf"))
+		if err != nil {
+			return nil, err
+		}
+		sg, err := r.resolveGroupsWith(ctx, conn, func(rg *refGroup) error {
+			if above[DNKey(rg.dn)] {
+				rg.members[id] = true
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if miss := sg.missing(); len(miss) > 0 {
+			return nil, fmt.Errorf("source: referenced groups not found: %s", strings.Join(miss, ", "))
+		}
+		if r.excluded(e.DN) {
+			out.Reason = "below an excluded base"
+			return out, nil
+		}
+		if in, reason := sg.decide(id); !in {
+			out.Reason = reason
+			return out, nil
+		}
+		mapped, placement, err := r.rules.User(e.DN, entryAttrs{e}, membership{g: sg, guid: id})
+		if err != nil {
+			if !errors.Is(err, mapping.ErrAmbiguousOrgUnit) || mapped == nil {
+				// Read skips such a user: it is not synced.
+				out.Reason = err.Error()
+				return out, nil
+			}
+			su.Error = err.Error()
+		}
+		su.Attrs, su.Placement, su.Fallback = mapped, placement, r.rules.FallbackFields(entryAttrs{e})
+		out.InScope = true
+		return out, nil
+	}
+	return &source.UserScope{Reason: "not below the user bases"}, nil
+}
+
+// maxGroupsAbove bounds the walk up the group tree of one user.
+const maxGroupsAbove = 2000
+
+// groupsAbove returns every group a user is a member of, directly or
+// through nested groups, by walking memberOf upwards from its direct
+// groups (one read per group; cycles are visited once). As with the
+// membership searches of Read, the primary group (Domain Users) does not
+// count: it is not a memberOf value.
+func (r *Reader) groupsAbove(ctx context.Context, conn *ad.Conn, direct []string) (map[string]bool, error) {
+	seen := map[string]bool{}
+	queue := append([]string(nil), direct...)
+	for len(queue) > 0 {
+		dn := queue[0]
+		queue = queue[1:]
+		k := DNKey(dn)
+		if seen[k] {
+			continue
+		}
+		if len(seen) >= maxGroupsAbove {
+			return nil, fmt.Errorf("source: more than %d groups above one user", maxGroupsAbove)
+		}
+		seen[k] = true
+		e, err := conn.Get(ctx, dn, "memberOf")
+		if errors.Is(err, ad.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("source: group %s: %w", dn, err)
+		}
+		queue = append(queue, e.GetAttributeValues("memberOf")...)
+	}
+	return seen, nil
 }
 
 // ---- preview and connection test (no write anywhere) ----

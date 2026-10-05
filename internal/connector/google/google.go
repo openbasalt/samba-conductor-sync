@@ -11,8 +11,13 @@
 // customType: <marker>-adopted, value: <AD objectGUID>}, so the adopted
 // rules survive a loss of the state database.
 //
-// Passwords: only CreateUser sends one (random, never logged or stored).
-// No other request carries a password or changePasswordAtNextLogin.
+// Passwords: CreateUser sends one (random, never logged or stored, change
+// required at next sign-in). The self-service calls, made only on a user's
+// explicit request in conductor, send the user's own password once:
+// CreateUserWithPassword (an on-demand creation) and SetPassword (a reset of
+// a linked account; its PATCH carries only password and
+// changePasswordAtNextLogin). No other request carries a password or
+// changePasswordAtNextLogin.
 package google
 
 import (
@@ -552,11 +557,61 @@ func (g *Connector) CreateUser(ctx context.Context, sourceID string, attrs model
 	if err != nil {
 		return "", err
 	}
+	return g.createUser(ctx, sourceID, attrs, suspended, pw, true)
+}
+
+// Google's own limits of a password set through the Directory API (a
+// tenant may require more; the API then answers 400 and the call fails with
+// connector.ErrInvalid).
+const (
+	minPasswordLength = 8
+	maxPasswordLength = 100
+)
+
+var _ connector.SelfService = (*Connector)(nil)
+
+// Capabilities implements connector.SelfService.
+func (g *Connector) Capabilities() connector.Capabilities {
+	return connector.Capabilities{Title: "Google Workspace", OnDemandCreate: true, SetPassword: true, PasswordRules: true, Status: true}
+}
+
+// Rules implements connector.SelfService.
+func (g *Connector) Rules() connector.PasswordRules {
+	return connector.PasswordRules{MinLength: minPasswordLength, MaxLength: maxPasswordLength, PrintableASCII: true, NoEdgeSpaces: true}
+}
+
+// CreateUserWithPassword implements connector.SelfService: the same
+// request as CreateUser, with the user's password and no change required
+// at next sign-in (the user saw or chose it; nobody else did).
+func (g *Connector) CreateUserWithPassword(ctx context.Context, sourceID string, attrs model.UserAttrs, password string) (string, error) {
+	if password == "" {
+		return "", fmt.Errorf("%w: empty password", connector.ErrInvalid)
+	}
+	return g.createUser(ctx, sourceID, attrs, false, password, false)
+}
+
+// SetPassword implements connector.SelfService. The PATCH carries only
+// password and changePasswordAtNextLogin (false: the user knows it). The
+// value is never part of an error, a log line or the request log (which
+// records field names only).
+func (g *Connector) SetPassword(ctx context.Context, targetID, password string) error {
+	if password == "" {
+		return fmt.Errorf("%w: empty password", connector.ErrInvalid)
+	}
+	body := map[string]any{"password": password, "changePasswordAtNextLogin": false}
+	if _, err := g.c.do(ctx, http.MethodPatch, apiPrefix+"/users/"+url.PathEscape(targetID), nil, body, nil); err != nil {
+		return fmt.Errorf("google: set the password of %s: %w", targetID, err)
+	}
+	return nil
+}
+
+// createUser inserts an account carrying the ownership marker.
+func (g *Connector) createUser(ctx context.Context, sourceID string, attrs model.UserAttrs, suspended bool, pw string, changeNext bool) (string, error) {
 	body := map[string]any{
 		"primaryEmail":              attrs[model.FieldPrimaryEmail],
 		"name":                      apiName{GivenName: attrs[model.FieldGivenName], FamilyName: attrs[model.FieldFamilyName]},
 		"password":                  pw,
-		"changePasswordAtNextLogin": true,
+		"changePasswordAtNextLogin": changeNext,
 		"orgUnitPath":               attrs[model.FieldOrgUnit],
 		"suspended":                 suspended,
 	}
@@ -576,13 +631,20 @@ func (g *Connector) CreateUser(ctx context.Context, sourceID string, attrs model
 		body["phones"] = phones
 	}
 	var created apiUser
-	_, err = g.c.do(ctx, http.MethodPost, apiPrefix+"/users", nil, body, &created)
+	_, err := g.c.do(ctx, http.MethodPost, apiPrefix+"/users", nil, body, &created)
 	if err != nil {
 		if errors.Is(err, connector.ErrConflict) {
 			// Our own earlier attempt (or an interrupted run) may have
 			// created it: an account carrying our marker for this source
 			// is the result, anything else is a real conflict.
 			if u, gerr := g.GetUser(ctx, attrs[model.FieldPrimaryEmail]); gerr == nil && u.Owner == sourceID {
+				if !changeNext {
+					// The user's own password: whichever attempt created the
+					// account, make sure it is this one.
+					if perr := g.SetPassword(ctx, u.ID, pw); perr != nil {
+						return "", perr
+					}
+				}
 				return u.ID, nil
 			}
 		}

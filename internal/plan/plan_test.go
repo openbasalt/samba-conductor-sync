@@ -266,3 +266,32 @@ func TestPlanErrorLeavesUserUntouched(t *testing.T) {
 		t.Fatalf("reason %q", r)
 	}
 }
+
+// TestPendingActivation: with self-service activation, only activated
+// users are created; adoptions, updates and suspensions are unchanged.
+func TestPendingActivation(t *testing.T) {
+	in := Input{
+		Users: []model.SourceUser{
+			su("a", "a@x.com", true), // linked: updated as usual
+			su("b", "b@x.com", true), // new, activated
+			su("c", "c@x.com", true), // new, not activated
+			su("d", "d@x.com", true), // existing account: adopted
+		},
+		TargetUsers: []model.TargetUser{tu("1", "a", "a@x.com", false), tu("4", "", "d@x.com", false)},
+		Links:       []Link{{Kind: model.KindUser, SourceID: "a", TargetID: "1", Key: "a@x.com"}},
+		Policy:      Policy{SuspendDisabled: true, Adopt: AdoptEmail, SelfServiceActivation: true},
+		Activated:   map[string]bool{"b": true},
+	}
+	in.Users[0].Attrs[model.FieldGivenName] = "New"
+	p := Compute(in)
+	if got, want := kinds(p), "user.update:a@x.com user.adopt:d@x.com user.create:b@x.com"; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+	if len(p.Warnings) != 1 || p.Warnings[0].Code != WarnPendingActivation || p.Warnings[0].Key != "c@x.com" {
+		t.Fatalf("warnings %+v", p.Warnings)
+	}
+	in.Policy.SelfServiceActivation = false
+	if got := kinds(Compute(in)); !strings.Contains(got, "user.create:c@x.com") {
+		t.Fatalf("auto activation: %s", got)
+	}
+}

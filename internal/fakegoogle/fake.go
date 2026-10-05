@@ -53,6 +53,11 @@ type User struct {
 	ChangePasswordNext bool             `json:"changePasswordAtNextLogin"`
 	// PasswordSet records that a password was given (the value is dropped).
 	PasswordSet bool `json:"-"`
+	// PasswordChanges counts password writes after the create.
+	PasswordChanges int `json:"-"`
+	// pwHash is a salted SHA-256 of the last password, so a test can check
+	// that the password a user was shown is the one the account has.
+	pwHash string
 }
 
 // Group is a stored group.
@@ -113,6 +118,9 @@ type Server struct {
 	Latency time.Duration
 	// RateLimitEvery answers 429 to every Nth API request (0 = never).
 	RateLimitEvery int
+	// MinPasswordLength is the tenant's password policy (default 8, the
+	// Directory API's own minimum): a shorter password answers 400.
+	MinPasswordLength int
 
 	key      *rsa.PrivateKey
 	tokenURL string
@@ -783,7 +791,7 @@ func (s *Server) insertUser(w http.ResponseWriter, r *http.Request) {
 	case !validName(in.Name):
 		writeErr(w, http.StatusBadRequest, "invalid", "Invalid Given/Family Name")
 		return
-	case len(in.Password) < 8 || len(in.Password) > 100:
+	case !s.passwordOK(in.Password):
 		writeErr(w, http.StatusBadRequest, "invalid", "Invalid Password")
 		return
 	case in.OrgUnitPath != "" && !s.orgUnits[in.OrgUnitPath]:
@@ -798,9 +806,46 @@ func (s *Server) insertUser(w http.ResponseWriter, r *http.Request) {
 	}
 	u := &User{ID: s.newID(), PrimaryEmail: email, Name: in.Name, Suspended: in.Suspended, OrgUnitPath: in.OrgUnitPath,
 		ExternalIDs: in.ExternalIDs, Organizations: in.Organizations, Phones: in.Phones,
-		ChangePasswordNext: in.ChangePasswordNext, PasswordSet: true}
+		ChangePasswordNext: in.ChangePasswordNext, PasswordSet: true, pwHash: hashPassword(in.Password)}
 	s.users[u.ID] = u
 	writeJSON(w, http.StatusOK, u)
+}
+
+// SetMinPasswordLength changes the tenant's password policy.
+func (s *Server) SetMinPasswordLength(n int) {
+	s.mu.Lock()
+	s.MinPasswordLength = n
+	s.mu.Unlock()
+}
+
+// passwordOK applies the Directory API's limits and the tenant's policy
+// (called with the lock held).
+func (s *Server) passwordOK(pw string) bool {
+	minLen := max(8, s.MinPasswordLength)
+	return len(pw) >= minLen && len(pw) <= 100
+}
+
+// pwSalt is per process: the fake never keeps a password, only a salted
+// hash for PasswordMatches.
+var pwSalt = func() []byte {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return b
+}()
+
+func hashPassword(pw string) string {
+	h := sha256.New()
+	h.Write(pwSalt)
+	h.Write([]byte(pw))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// PasswordMatches reports whether the account (ID or address) has pw.
+func (s *Server) PasswordMatches(key, pw string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u := s.userByKey(key)
+	return u != nil && u.pwHash != "" && u.pwHash == hashPassword(pw)
 }
 
 func (s *Server) patchUser(w http.ResponseWriter, r *http.Request, u *User) {
@@ -857,6 +902,17 @@ func (s *Server) patchUser(w http.ResponseWriter, r *http.Request, u *User) {
 			err = json.Unmarshal(v, &c.Organizations)
 		case "phones":
 			err = json.Unmarshal(v, &c.Phones)
+		case "password":
+			var pw string
+			err = json.Unmarshal(v, &pw)
+			if err == nil && !s.passwordOK(pw) {
+				writeErr(w, http.StatusBadRequest, "invalid", "Invalid Password")
+				return
+			}
+			c.pwHash, c.PasswordSet = hashPassword(pw), true
+			c.PasswordChanges++
+		case "changePasswordAtNextLogin":
+			err = json.Unmarshal(v, &c.ChangePasswordNext)
 		default:
 			writeErr(w, http.StatusBadRequest, "invalid", "unsupported field "+k)
 			return

@@ -17,7 +17,10 @@
 // (secret.set, config.update, connection.test) and the webhook HMAC secret
 // (secret.set) cross the socket in one direction only. They are never
 // returned, logged or audited: results and the audit log carry their name
-// and whether they are configured, never a value or a fingerprint.
+// and whether they are configured, never a value or a fingerprint. The
+// self-service operations (account.go) carry a user's new target password
+// once: chosen by the user in a request, or generated and returned once in
+// a result; it is never stored, logged or audited either.
 package syncapi
 
 import (
@@ -78,7 +81,8 @@ const (
 // key, runs, the target directory). Mutations are audited with the actor.
 func (o Op) Mutating() bool {
 	switch o {
-	case OpConfigUpdate, OpConfigRollback, OpKeySet, OpSecretSet, OpSecretRemove, OpPlanStart, OpApplyStart:
+	case OpConfigUpdate, OpConfigRollback, OpKeySet, OpSecretSet, OpSecretRemove, OpPlanStart, OpApplyStart,
+		OpAccountActivate, OpAccountSetPassword:
 		return true
 	}
 	return false
@@ -178,6 +182,10 @@ var Allowlist = map[Op]func() Params{
 	OpRunGet:         func() Params { return &RunGetParams{} },
 	OpAuditVerify:    func() Params { return &NoParams{} },
 	OpImportPlan:     func() Params { return &ImportPlanParams{} },
+	// Self-service (account.go).
+	OpAccountStatus:      func() Params { return &AccountStatusParams{} },
+	OpAccountActivate:    func() Params { return &AccountActivateParams{} },
+	OpAccountSetPassword: func() Params { return &AccountSetPasswordParams{} },
 }
 
 var (

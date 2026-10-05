@@ -372,3 +372,57 @@ the sync adopt the Google accounts by address. Details:
     an older conductor-sync answers that it is not allowlisted. The answer
     is bounded (`max_users` 5,000, `max_groups` 1,000) and refused when it
     would exceed the 4 MiB message limit.
+
+## Self-service: connected accounts (2026-10-05)
+
+A signed-in user activates their own account on a target, or sets a new
+password on it, from conductor's self-service. Details:
+[self-service.md](self-service.md).
+
+59. Generic capabilities. A connector that supports self-service implements
+    an optional interface (`connector.SelfService`: capabilities, password
+    rules, create with the user's password, set a password) and declares
+    what it supports; the management API carries the capabilities and the
+    rules, and conductor shows only what a target declares. Nothing in the
+    protocol or in conductor names a Google type or field.
+60. The actor is the user. The account operations take no user: they act on
+    the request's actor, looked up in AD by SID with the scope rules of a
+    full read (a one-user lookup that walks the user's groups upwards, about
+    40 ms in the lab instead of seconds for the member lists of the scope
+    groups). conductor cannot, even by mistake, act on someone else.
+61. No stored password. Storing an initial password in an AD attribute was
+    rejected (readable by authenticated users by default, in plain text in
+    backups and replication). A generated password is returned once in the
+    API result and shown once by conductor; a typed one crosses the socket
+    once. Neither reaches the state database, the journal, the audit or a
+    log; the request log records field names only. Tests search the state
+    files and logs for the password.
+62. `changePasswordAtNextLogin` is false for a self-service password: the
+    user saw it (or chose it) and nobody else did, so a forced change only
+    makes them pick another one right away. A run's create keeps true (its
+    random password is never shown). Resets send only `password` and
+    `changePasswordAtNextLogin`.
+63. An activation is a run's plan, applied for one user. The plan is
+    computed as for a sync run, with the user counted as activated, so the
+    mapping, the scope and every address and ownership check are the same;
+    only that user's create (and memberships in existing groups) is applied,
+    journaled as a run of its own (action `activate`) under the run lock.
+    It never adopts: an existing account with the address is left to the
+    next run. The batch limits do not apply (one account); the rate limits
+    do.
+64. `activation = "self-service"` makes the runs skip the creation of users
+    who did not activate theirs, reported as `pending-activation` warnings
+    (not operations: the digest and the limits do not depend on them).
+    Activations are recorded in the state database, so an activated user's
+    account deleted outside the sync is created again by the runs.
+65. Password resets are conservative by default: only accounts the sync
+    created (`password_reset = "created"`); adopted accounts only with
+    `created-and-adopted`; never target administrators or the sync's own
+    subject, never a suspended account or one without the user's marker,
+    never in dry-run mode. Rate limits per user and per target are kept in
+    the state database, and conductor asks for a fresh second factor when
+    the last one is older than a few minutes.
+66. No protocol version change: three new operations and optional settings
+    (`self_service` absent while every value is the default, as decision 51
+    does for the adopted rules). An activation run does not supersede a plan
+    under review and is never applicable from the runs page.

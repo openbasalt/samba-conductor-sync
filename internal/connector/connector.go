@@ -42,6 +42,49 @@ type GroupGetter interface {
 	GetGroup(ctx context.Context, key string) (*model.TargetGroup, error)
 }
 
+// Capabilities are the optional self-service features of a connector:
+// what conductor may offer a user for this target. Nothing in them is
+// specific to one target.
+type Capabilities struct {
+	// Title is the target's display name ("Google Workspace").
+	Title string
+	// OnDemandCreate: CreateUserWithPassword is supported.
+	OnDemandCreate bool
+	// SetPassword: SetPassword is supported.
+	SetPassword bool
+	// PasswordRules: Rules describes the target's password rules.
+	PasswordRules bool
+	// Status: GetUser reads one account's state.
+	Status bool
+}
+
+// PasswordRules are the target's own rules for a password.
+type PasswordRules struct {
+	MinLength, MaxLength int
+	// PrintableASCII: only ASCII letters, digits, punctuation and spaces.
+	PrintableASCII bool
+	// NoEdgeSpaces: no space at the start or at the end.
+	NoEdgeSpaces bool
+}
+
+// SelfService is implemented by connectors that support self-service
+// actions (on-demand creation and password changes requested by the user
+// in conductor). The engine checks Capabilities before calling the others.
+//
+// A password given here is the user's own (shown once to them, or typed by
+// them): the connector sends it once to the target and never logs, stores
+// or returns it, and the account is not asked to change it at next sign-in
+// (the user already knows it and nobody else ever saw it).
+type SelfService interface {
+	Capabilities() Capabilities
+	Rules() PasswordRules
+	// CreateUserWithPassword is CreateUser (never suspended) with the
+	// user's password.
+	CreateUserWithPassword(ctx context.Context, sourceID string, attrs model.UserAttrs, password string) (string, error)
+	// SetPassword replaces the password of an existing account.
+	SetPassword(ctx context.Context, targetID, password string) error
+}
+
 // Connector is one target directory.
 type Connector interface {
 	// Name identifies the connector in state and audit ("google").

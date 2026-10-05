@@ -81,6 +81,8 @@ type Engine struct {
 	// OnRun, when set, is told the ID of the run as soon as it is
 	// recorded (the management API tracks background jobs with it).
 	OnRun func(runID int64)
+	// SelfService is the self-service policy (selfservice.go).
+	SelfService SelfServicePolicy
 	// Hooks are for tests only.
 	Hooks Hooks
 }
@@ -211,6 +213,12 @@ func confirmLinked(ctx context.Context, c connector.Connector, snap *connector.S
 }
 
 func (e *Engine) compute(ctx context.Context, c connector.Connector) (*Computed, error) {
+	return e.computeWith(ctx, c, "")
+}
+
+// computeWith is compute with one more user counted as activated (the plan
+// of a self-service activation, which creates that user's account).
+func (e *Engine) computeWith(ctx context.Context, c connector.Connector, activate string) (*Computed, error) {
 	src, err := e.Source.Read(ctx)
 	if err != nil {
 		return nil, err
@@ -234,8 +242,16 @@ func (e *Engine) compute(ctx context.Context, c connector.Connector) (*Computed,
 	if err != nil {
 		return nil, err
 	}
+	activated, err := e.Store.Activated(ctx, e.ConnectorName)
+	if err != nil {
+		return nil, err
+	}
+	if activate != "" {
+		activated[activate] = true
+	}
 	p := plan.Compute(plan.Input{Connector: e.ConnectorName, Users: src.Users, Groups: src.Groups,
-		TargetUsers: snap.Users, TargetGroups: snap.Groups, Links: links, InFlight: inflightOf(inflight), Policy: e.Policy})
+		TargetUsers: snap.Users, TargetGroups: snap.Groups, Links: links, InFlight: inflightOf(inflight), Policy: e.Policy,
+		Activated: activated})
 	// Display fields (not part of the digest).
 	p.Scope, p.NotIncluded, p.Excluded = src.Scope, src.NotIncluded, src.Excluded
 	for _, s := range src.Skipped {
@@ -592,6 +608,10 @@ type executor struct {
 	// failedSources marks objects whose create failed, so dependent
 	// memberships are skipped instead of failing.
 	failedSources map[string]bool
+	// createPassword is the user's own password of a self-service
+	// activation (the only create of that run); empty: CreateUser with a
+	// random password.
+	createPassword string
 
 	done, failed, skipped int
 	failures              []string
@@ -720,7 +740,17 @@ func (x *executor) exec(ctx context.Context, seq int, op plan.Op) (string, error
 	case plan.GroupUnlink:
 		return "", x.dropLink(ctx, model.KindGroup, op.SourceID)
 	case plan.UserCreate:
-		id, err := x.conn.CreateUser(ctx, op.SourceID, op.Attrs, op.Suspend)
+		var id string
+		var err error
+		if x.createPassword != "" {
+			ss, ok := x.conn.(connector.SelfService)
+			if !ok || op.Suspend {
+				return "", errors.New("this create cannot carry the user's password")
+			}
+			id, err = ss.CreateUserWithPassword(ctx, op.SourceID, op.Attrs, x.createPassword)
+		} else {
+			id, err = x.conn.CreateUser(ctx, op.SourceID, op.Attrs, op.Suspend)
+		}
 		if err != nil {
 			return "", err
 		}

@@ -106,12 +106,24 @@ remove_unmanaged_members = false # keep members of synced groups that the sync d
 # Adopting an existing Google Workspace (adopt = "email"): what the sync may
 # change on accounts and groups that existed before it. The defaults keep an
 # adopted account as it was; see docs/mapping.md, "Adopting an existing
-# Google Workspace". Passwords are never sent to adopted accounts.
+# Google Workspace". The sync runs never send a password to an adopted
+# account (see [self_service] for what its user may do).
 adopted_org_unit = "keep"        # or "manage": move it by the org unit rules
 adopted_email = "keep"           # or "manage": rename it when AD renders another address
 adopted_names = "if-set"         # or "keep" / "manage": names only when AD has its own value
 adopted_attributes = "if-set"    # or "keep" / "manage": an empty AD value never clears
 adopted_group_members = "add-only" # or "manage": adopted groups never lose a member
+
+# Self-service in conductor ("Connected accounts"): what a signed-in user may
+# do with their own account on this target, only on their explicit request
+# and with a recent second factor. See docs/self-service.md.
+[self_service]
+activation = "auto"              # or "self-service": an account is created only when its user activates it
+password_reset = "created"       # or "created-and-adopted" / "off"; administrators are always refused
+chosen_password = "off"          # or "allow": the user may type a password instead of a generated one
+password_min_length = 12         # raises the target's own minimum (8-100)
+max_per_user_hour = 3            # activations and password changes per user in any hour
+max_per_target_hour = 30         # the same for every user of this target
 
 # Scheduled runs apply only plans inside these limits; otherwise they stop,
 # record the plan as blocked and alert. 0 = none allowed, -1 = no limit.

@@ -76,6 +76,35 @@ type Settings struct {
 	// and the alert webhook. Nil (a version stored before P5c, or a
 	// client that does not send it) keeps the configuration file's values.
 	Connection *ConnectionSettings `json:"connection,omitempty"`
+	// SelfService is the self-service policy of the target (on-demand
+	// activation, password resets). Nil means every default (and is how
+	// defaults travel, so clients that predate it keep decoding); nil in
+	// an update keeps the configuration file's values, and so does an empty
+	// field.
+	SelfService *SelfServiceSettings `json:"self_service,omitempty"`
+}
+
+// SelfServiceSettings are the self-service policy of the target. Empty
+// values mean the defaults (and keep the file's value in an update).
+type SelfServiceSettings struct {
+	// Activation: "auto" (default: the sync runs create accounts) or
+	// "self-service" (an account is created only when its user activates
+	// it; runs show the others as pending activation).
+	Activation string `json:"activation,omitempty"`
+	// PasswordReset: "created" (default: only accounts the sync created),
+	// "created-and-adopted" or "off". Target administrators are always
+	// refused.
+	PasswordReset string `json:"password_reset,omitempty"`
+	// ChosenPassword: "off" (default: passwords are generated) or "allow"
+	// (the user may type their own).
+	ChosenPassword string `json:"chosen_password,omitempty"`
+	// PasswordMinLength raises the target's minimum length (default 12).
+	PasswordMinLength int `json:"password_min_length,omitempty"`
+	// MaxPerUserHour and MaxPerTargetHour bound the self-service actions
+	// (activations and password changes) per user and per target in any
+	// hour (defaults 3 and 30).
+	MaxPerUserHour   int `json:"max_per_user_hour,omitempty"`
+	MaxPerTargetHour int `json:"max_per_target_hour,omitempty"`
 }
 
 // ConnectionSettings are the connection settings editable since P5c.
