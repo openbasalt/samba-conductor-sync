@@ -152,3 +152,31 @@ func TestSuspendedAtKeptAcrossUpdates(t *testing.T) {
 		t.Fatalf("not cleared: %v", got.SuspendedAt)
 	}
 }
+
+func TestOpenRefusesNewerSchema(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "schema.db")
+	s, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A migration from the future, as a newer build would have recorded it.
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (99999, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if s2, err := Open(ctx, dbPath); !errors.Is(err, ErrSchemaTooNew) {
+		if s2 != nil {
+			_ = s2.Close()
+		}
+		t.Fatalf("Open = %v, want ErrSchemaTooNew", err)
+	}
+	// Reopening with the current schema keeps working.
+	s3, err := Open(ctx, filepath.Join(t.TempDir(), "fresh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s3.Close()
+}

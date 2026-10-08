@@ -89,6 +89,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	sort.Strings(names)
+	if err := s.refuseNewerSchema(ctx, names); err != nil {
+		return err
+	}
 	for _, name := range names {
 		v, err := strconv.Atoi(strings.SplitN(path.Base(name), "_", 2)[0])
 		if err != nil {
@@ -607,4 +610,30 @@ func clip(s string, n int) string {
 		return s[:n]
 	}
 	return s
+}
+
+// ErrSchemaTooNew is returned by Open when the database records a migration
+// this build does not know: a newer version wrote it, and running older code
+// against it (a package or container image rollback) could corrupt it.
+var ErrSchemaTooNew = errors.New("store: the database was written by a newer version (downgrades are not supported)")
+
+// refuseNewerSchema fails with ErrSchemaTooNew when the database records a
+// migration newer than the newest embedded one: schemas only move forward.
+func (s *Store) refuseNewerSchema(ctx context.Context, names []string) error {
+	known := 0
+	for _, name := range names {
+		v, err := strconv.Atoi(strings.SplitN(path.Base(name), "_", 2)[0])
+		if err != nil {
+			return fmt.Errorf("store: migration %s: bad name", name)
+		}
+		known = max(known, v)
+	}
+	var applied int
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&applied); err != nil {
+		return fmt.Errorf("store: %w", err)
+	}
+	if applied > known {
+		return fmt.Errorf("%w: schema version %d, this build knows up to %d", ErrSchemaTooNew, applied, known)
+	}
+	return nil
 }
