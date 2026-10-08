@@ -42,6 +42,11 @@ Check or export the hash-chained audit log.
 .B check-config
 Validate the configuration and the credentials.
 .TP
+.B healthcheck
+Exit 0 when the management API socket of
+.B serve
+exists (container healthchecks).
+.TP
 .B serve
 Run the local management API used by conductor's web interface (started by
 .BR conductor-sync-api.socket ).

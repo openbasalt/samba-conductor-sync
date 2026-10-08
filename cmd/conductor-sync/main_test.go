@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"flag"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -87,5 +88,33 @@ admin_subject = "admin@example.com"
 	if rc := run([]string{"audit", "export", "--config", cfg}, nil, &out, &errb); rc != exitOK || strings.Contains(out.String(), value) ||
 		!strings.Contains(out.String(), "secret alert_webhook_secret: removed") {
 		t.Fatalf("audit: %d\n%s", rc, out.String())
+	}
+}
+
+func TestHealthcheck(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "api.sock")
+	cfgPath := filepath.Join(dir, "conductor-sync.toml")
+	example, err := os.ReadFile(filepath.Join("..", "..", "conductor-sync.toml.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgText := strings.Replace(string(example), `socket = "/run/conductor-sync/api.sock"`, `socket = "`+sock+`"`, 1)
+	if err := os.WriteFile(cfgPath, []byte(cfgText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := run([]string{"healthcheck", "--config", cfgPath}, nil, &out, &errb); code != exitError ||
+		!strings.Contains(errb.String(), "management API socket") {
+		t.Fatalf("no socket: exit %d, stderr %q", code, errb.String())
+	}
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	errb.Reset()
+	if code := run([]string{"healthcheck", "--config", cfgPath}, nil, &out, &errb); code != exitOK {
+		t.Fatalf("socket present: exit %d, stderr %q", code, errb.String())
 	}
 }

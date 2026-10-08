@@ -14,6 +14,7 @@
 //	conductor-sync audit    verify | export
 //	conductor-sync check-config
 //	conductor-sync serve                     (the management API for conductor)
+//	conductor-sync healthcheck               (containers: the API socket exists)
 //	conductor-sync config   export | import [FILE] | history
 //	conductor-sync key      set FILE | show
 //	conductor-sync secret   status | set NAME | remove NAME   (value on stdin)
@@ -82,6 +83,7 @@ commands:
   audit          verify | export the hash-chained audit log
   check-config   validate the configuration and the credentials
   serve          run the local management API used by conductor's web UI
+  healthcheck    exit 0 when serve's management API socket exists (containers)
   config         export | import [FILE] | history of the sync settings
   key            set FILE | show the Google service account key (stored encrypted)
   secret         status | set NAME | remove NAME: the AD bind password and the
@@ -136,7 +138,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "import-plan":
 		imp.register(fs)
 		fs.BoolVar(&asJSON, "json", false, "print the plan as JSON")
-	case "status", "audit", "check-config", "serve", "config", "key", "secret":
+	case "status", "audit", "check-config", "serve", "config", "key", "secret", "healthcheck":
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", cmd)
 		usage(stderr)
@@ -153,6 +155,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		positional = append(positional, fs.Arg(0))
 		rest = fs.Args()[1:]
+	}
+	if cmd == "healthcheck" {
+		return healthcheck(*cfgPath, stdout, stderr)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
