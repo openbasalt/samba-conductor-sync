@@ -7,6 +7,8 @@ GitHub fit the same connector interface later.
 Part of Samba Conductor v2. Design: [docs/design.md](docs/design.md) and the family's
 [architecture.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/architecture.md).
 
+Container image: `docker.io/openbasalt/samba-conductor-sync`, tags `0.1.0` and `latest`, also on `ghcr.io/openbasalt` with the same digests, see [containers.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/containers.md).
+
 ## What it does
 
 - Reads users and groups from AD with a read-only service account
@@ -34,7 +36,7 @@ Part of Samba Conductor v2. Design: [docs/design.md](docs/design.md) and the fam
 | Never delete | an account that leaves the scope (or the AD) is suspended; a group that leaves the scope is kept. Deletion is `delete-user`: one account, suspended by the sync for at least `min_suspended_days`, out of the AD scope, confirmed by typing its address |
 | Only what it owns | accounts carry an ownership marker (`externalIds`, customType `conductor-sync`); an existing account with the same address is reported and left alone unless `adopt = "email"`; administrators are never suspended or renamed; a suspension made by someone else is never undone; members the sync does not manage stay in synced groups |
 | Idempotent, resumable | every operation is journaled before and after it is sent; a crashed run is detected by the next one, and the fresh plan resolves the unknown outcomes (marker, in-flight creates). Re-running is always safe |
-| Audit | every run, operation, blocked plan and deletion goes to a hash-chained audit log (`audit verify`) |
+| Audit | every run, operation, blocked plan and deletion goes to a hash-chained audit log (`audit verify`); the chain detects accidental or partial edits but is not keyed or anchored outside the database, so it does not protect against someone with write access to the database file: protect that file and ship the exported log off the host if you need tamper evidence |
 | Secrets | the AD password is a systemd credential (or 0600 file); the Google key is stored encrypted (AES-256-GCM, key from the `state-key` credential) or kept as a credential file; never logged, never returned by the API. Initial Google passwords are random, never stored, and must be changed at first sign-in (or SSO, below) |
 | Management API | `conductor-sync serve` on a Unix socket for conductor only (SO_PEERCRED), typed operations, every change audited with the acting AD user; applies bound to a reviewed plan's digest |
 
@@ -108,7 +110,8 @@ scripts under the prefix `conductor-synclab`, network `10.95.0.0/24`, domain
 
 ## Status
 
-Pre-release: no tagged version yet. Engine, Google connector, CLI,
+0.1.0 released (signed GitHub release `v0.1.0`, APT packages `0.1.0-1`,
+container image above). Engine, Google connector, CLI,
 systemd units, scope and org unit placement by AD group, the management API
 used by conductor's "Google Workspace sync" section
 (<https://github.com/openbasalt/samba-conductor/blob/main/docs/usage-p5b.md>),
