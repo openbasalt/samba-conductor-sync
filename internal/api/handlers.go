@@ -34,7 +34,9 @@ func (s *Server) Handle(ctx context.Context, req syncapi.Request) syncapi.Respon
 	result, err := s.dispatch(ctx, req, params)
 	if err != nil {
 		e := toAPIError(err)
-		if req.Op.Mutating() {
+		// The g2a operations audit their own failures (without personal
+		// data).
+		if req.Op.Mutating() && req.Op != syncapi.OpG2APlan && req.Op != syncapi.OpG2AConfirm {
 			s.audit(ctx, req, "api."+string(req.Op), "", e.Message, store.ResultFailed)
 		}
 		s.log.Info("request failed", "op", req.Op, "actor", req.Actor.User, "code", e.Code, "err", e.Message)
@@ -127,6 +129,10 @@ func (s *Server) dispatch(ctx context.Context, req syncapi.Request, params synca
 		return s.accountActivate(ctx, req, p)
 	case *syncapi.AccountSetPasswordParams:
 		return s.accountSetPassword(ctx, req, p)
+	case *syncapi.G2APlanParams:
+		return s.g2aPlan(ctx, req, p)
+	case *syncapi.G2AConfirmParams:
+		return s.g2aConfirm(ctx, req, p)
 	}
 	switch req.Op {
 	case syncapi.OpStatus:
@@ -721,6 +727,9 @@ func (s *Server) runGet(ctx context.Context, p *syncapi.RunGetParams) (*syncapi.
 		return nil, &syncapi.Error{Code: syncapi.CodeNotFound, Message: fmt.Sprintf("no run %d", p.ID)}
 	}
 	out := &syncapi.RunDetail{Run: *s.runView(ctx, r), Ops: []syncapi.PlanOp{}}
+	if r.Action == store.RunActionG2A {
+		return s.g2aRunGet(ctx, out, p)
+	}
 	pl, err := s.rt.Store.LoadPlan(ctx, p.ID)
 	if err != nil {
 		return nil, err

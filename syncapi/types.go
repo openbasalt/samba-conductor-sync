@@ -82,6 +82,10 @@ type Settings struct {
 	// an update keeps the configuration file's values, and so does an empty
 	// field.
 	SelfService *SelfServiceSettings `json:"self_service,omitempty"`
+	// GoogleFirst is the Google-first mode (Google Workspace to AD). Nil
+	// means off with no scope (and is how that default travels); nil in an
+	// update keeps the configuration file's section.
+	GoogleFirst *GoogleFirstSettings `json:"google_first,omitempty"`
 }
 
 // SelfServiceSettings are the self-service policy of the target. Empty
@@ -676,6 +680,12 @@ type RunDetail struct {
 	// Confirmation is the text an operator types to apply (bound to the
 	// digest).
 	Confirmation string `json:"confirmation,omitempty"`
+	// G2A is the plan of a g2a run (Google-first mode) with the requested
+	// page of its operations (Offset and Limit over the operations of every
+	// scope, in Seq order; OpsMatching counts them all), and G2AResults
+	// what conductor reported applying (g2a.confirm).
+	G2A        *G2APlan      `json:"g2a,omitempty"`
+	G2AResults []G2AOpResult `json:"g2a_results,omitempty"`
 }
 
 // RunsList is a page of runs.
