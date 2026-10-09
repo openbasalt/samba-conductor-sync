@@ -7,6 +7,8 @@ GitHub fit the same connector interface later.
 Part of Samba Conductor v2. Design: [docs/design.md](docs/design.md) and the family's
 [architecture.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/architecture.md).
 
+Container image: `docker.io/openbasalt/samba-conductor-sync` (also on `ghcr.io/openbasalt`), see [containers.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/containers.md).
+
 ## What it does
 
 - Reads users and groups from AD with a read-only service account
