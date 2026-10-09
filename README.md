@@ -7,7 +7,7 @@ GitHub fit the same connector interface later.
 Part of Samba Conductor v2. Design: [docs/design.md](docs/design.md) and the family's
 [architecture.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/architecture.md).
 
-Container image: `docker.io/openbasalt/samba-conductor-sync` (also on `ghcr.io/openbasalt`), see [containers.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/containers.md).
+Container image: `docker.io/openbasalt/samba-conductor-sync`, tags `0.1.0` and `latest`, also on `ghcr.io/openbasalt` with the same digests, see [containers.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/containers.md).
 
 ## What it does
 
@@ -110,7 +110,8 @@ scripts under the prefix `conductor-synclab`, network `10.95.0.0/24`, domain
 
 ## Status
 
-Pre-release: no tagged version yet. Engine, Google connector, CLI,
+0.1.0 released (signed GitHub release `v0.1.0`, APT packages `0.1.0-1`,
+container image above). Engine, Google connector, CLI,
 systemd units, scope and org unit placement by AD group, the management API
 used by conductor's "Google Workspace sync" section
 (<https://github.com/openbasalt/samba-conductor/blob/main/docs/usage-p5b.md>),
