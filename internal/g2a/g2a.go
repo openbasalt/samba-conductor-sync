@@ -537,15 +537,29 @@ func (b *scopeBuild) warn(code, key, msg string) {
 	b.sp.Warnings = append(b.sp.Warnings, syncapi.Warning{Code: code, Key: key, Message: msg})
 }
 
+// maxPrivilegeDetail bounds the privilege reasons kept in a skip: a
+// member of Domain Admins inherits one reason per protected object, so the
+// full list can run to dozens of ACL entries. The group reasons come first
+// (they explain the rest).
+const maxPrivilegeDetail = 8
+
 // privileged returns the privilege reasons of an AD object (nil when it is
-// not privileged).
+// not privileged), at most maxPrivilegeDetail of them plus a count of the
+// others.
 func (b *scopeBuild) privileged(o ADUser) []string {
 	var out []string
 	if o.AdminCount {
 		out = append(out, "adminCount is 1")
 	}
 	if o.SID != "" {
-		out = append(out, b.in.AD.Privileged[o.SID]...)
+		reasons := slices.Clone(b.in.AD.Privileged[o.SID])
+		sort.SliceStable(reasons, func(i, j int) bool {
+			return strings.HasPrefix(reasons[i], "group:") && !strings.HasPrefix(reasons[j], "group:")
+		})
+		out = append(out, reasons...)
+	}
+	if len(out) > maxPrivilegeDetail {
+		out = append(out[:maxPrivilegeDetail], fmt.Sprintf("and %d more", len(out)-maxPrivilegeDetail))
 	}
 	return out
 }

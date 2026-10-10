@@ -240,6 +240,18 @@ func TestPrivilegedSkipped(t *testing.T) {
 	if len(s) != 1 || s[0].SAM != "ana" || len(s[0].Detail) != 1 {
 		t.Fatalf("skips %+v", s)
 	}
+	// A long list is cut, the group reasons first.
+	long := []string{}
+	for i := range 20 {
+		long = append(long, fmt.Sprintf("acl: OU=X%d: (A;;RP;;;DA)", i))
+	}
+	ad.Privileged[a.SID] = append(long, "group: S-1-5-21-1-2-3-512")
+	r = plan(t, []GoogleUser{ana}, ad, []Link{linkOf(ana, a)})
+	s = skipped(r, syncapi.G2ASkipPrivileged)
+	if len(s) != 1 || len(s[0].Detail) != maxPrivilegeDetail+1 || s[0].Detail[0] != "group: S-1-5-21-1-2-3-512" ||
+		s[0].Detail[maxPrivilegeDetail] != "and 13 more" {
+		t.Fatalf("long detail %q", s[0].Detail)
+	}
 	// adminCount alone is enough.
 	a.AdminCount = true
 	ad.Privileged = map[string][]string{}
