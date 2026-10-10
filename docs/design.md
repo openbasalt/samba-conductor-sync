@@ -192,6 +192,19 @@ objects (mail = the Google address) with the administrator's credentials,
 after a preview, and the sync then adopts the Google accounts by address.
 See [import-from-google.md](import-from-google.md).
 
+## Google-first mode
+
+The opposite direction, opt-in per installation: Google Workspace is the
+source of truth for the people of each scope and AD follows. `g2a.plan`
+(and `conductor-sync g2a-plan`) reads Google with the read-only scopes and
+AD with the read-only account (privilege index included) and records a
+plan of typed AD operations as a run of action `g2a`; conductor applies it
+through conductor-provisioner and reports back with `g2a.confirm`.
+conductor-sync never writes to Google or AD. Privileged AD accounts are
+never touched, Google wins on the fields it owns, nothing is deleted, and
+the two directions never share an OU tree or an org unit. See
+[google-first.md](google-first.md).
+
 ## Self-service: connected accounts
 
 conductor's self-service shows a signed-in user their own account on each

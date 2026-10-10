@@ -74,6 +74,7 @@ func SettingsOf(c *Config) syncapi.Settings {
 		Schedule:    syncapi.ScheduleSettings{Interval: c.Schedule.Interval.Duration.String()},
 		Connection:  ConnectionOf(c),
 		SelfService: SelfServiceOf(c),
+		GoogleFirst: GoogleFirstOf(c),
 	}
 }
 
@@ -323,6 +324,7 @@ func (c *Config) Overlay(s syncapi.Settings, version int64) (*Config, error) {
 		AdoptedAttributes:      orFile(s.Policy.AdoptedAttributes, c.Policy.AdoptedAttributes),
 		AdoptedGroupMembers:    orFile(s.Policy.AdoptedGroupMembers, c.Policy.AdoptedGroupMembers)}
 	n.SelfService = overlaySelfService(c.SelfService, s.SelfService)
+	n.GoogleFirst = overlayGoogleFirst(c.GoogleFirst, s.GoogleFirst)
 	l := s.Limits
 	n.Limits = plan.Limits{MaxCreates: l.MaxCreates, MaxSuspends: l.MaxSuspends, MaxUnsuspends: l.MaxUnsuspends, MaxRenames: l.MaxRenames,
 		MaxUpdates: l.MaxUpdates, MaxGroupChanges: l.MaxGroupChanges, MaxMembershipChanges: l.MaxMembershipChanges,

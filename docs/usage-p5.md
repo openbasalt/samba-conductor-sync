@@ -173,6 +173,7 @@ reorganization), apply it by hand with `--override-limits`.
 | `cs map [KEY]` | the link of an account or group: address, Google ID, AD objectGUID and DN, suspended by the sync |
 | `cs audit verify` / `export` | chain check; JSON lines for archiving |
 | `cs import-plan [--groups] [--json]` | read-only: the Google accounts and groups conductor's "Import from Google" may create in AD ([import-from-google.md](import-from-google.md)) |
+| `cs g2a-plan [--scope NAME] [--json]` | Google-first mode, read-only on both sides: records the plan of the AD changes conductor may apply ([google-first.md](google-first.md)) |
 
 What AD changes do on Google:
 
