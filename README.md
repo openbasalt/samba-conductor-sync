@@ -7,7 +7,7 @@ GitHub fit the same connector interface later.
 Part of Samba Conductor v2. Design: [docs/design.md](docs/design.md) and the family's
 [architecture.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/architecture.md).
 
-Container image: `docker.io/openbasalt/samba-conductor-sync`, tags `0.1.0` and `latest`, also on `ghcr.io/openbasalt` with the same digests, see [containers.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/containers.md).
+Container image: `docker.io/openbasalt/samba-conductor-sync`, tags `0.1.1` and `latest` (the containers release; conductor-sync 0.1.0 inside), also on `ghcr.io/openbasalt` with the same digests, see [containers.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/containers.md).
 
 ## What it does
 
