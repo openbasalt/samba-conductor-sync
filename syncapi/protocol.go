@@ -82,7 +82,7 @@ const (
 func (o Op) Mutating() bool {
 	switch o {
 	case OpConfigUpdate, OpConfigRollback, OpKeySet, OpSecretSet, OpSecretRemove, OpPlanStart, OpApplyStart,
-		OpAccountActivate, OpAccountSetPassword:
+		OpAccountActivate, OpAccountSetPassword, OpG2APlan, OpG2AConfirm:
 		return true
 	}
 	return false
@@ -186,6 +186,9 @@ var Allowlist = map[Op]func() Params{
 	OpAccountStatus:      func() Params { return &AccountStatusParams{} },
 	OpAccountActivate:    func() Params { return &AccountActivateParams{} },
 	OpAccountSetPassword: func() Params { return &AccountSetPasswordParams{} },
+	// Google-first mode (g2a.go).
+	OpG2APlan:    func() Params { return &G2APlanParams{} },
+	OpG2AConfirm: func() Params { return &G2AConfirmParams{} },
 }
 
 var (

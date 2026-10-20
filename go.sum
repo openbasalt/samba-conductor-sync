@@ -44,8 +44,8 @@ github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsRe
 github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/openbasalt/samba-conductor-ad v0.0.0-20261009012208-17469fcb3764 h1:1ylZMSgIZh1Heo8+uFwgeGXH0NAmh/7M4/xvaXnaNks=
-github.com/openbasalt/samba-conductor-ad v0.0.0-20261009012208-17469fcb3764/go.mod h1:1ZM3lMx0CPQyFu9w8jKmI8kvvBXhnYFdUlb7TPIVCOc=
+github.com/openbasalt/samba-conductor-ad v0.0.0-20261009230719-813b733ae855 h1:X+dEQOqxhSxpBAEoqezZKwHnlpkFmuA2DmJfCZXfnoQ=
+github.com/openbasalt/samba-conductor-ad v0.0.0-20261009230719-813b733ae855/go.mod h1:1ZM3lMx0CPQyFu9w8jKmI8kvvBXhnYFdUlb7TPIVCOc=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=

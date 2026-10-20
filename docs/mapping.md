@@ -112,6 +112,12 @@ Google Workspace" below).
 
 ## Scope
 
+The opposite direction (Google Workspace to AD) is the Google-first mode,
+configured in `[google_first]` ([google-first.md](google-first.md)). Its
+managed OUs may not overlap `user_bases` or `group_bases`, and its Google
+org units may not be targets of this mapping: the two directions never
+share objects.
+
 `[source]` decides who is in scope:
 
 - `user_bases`: containers searched (subtree) for users;

@@ -179,3 +179,24 @@ socket = "/run/conductor-sync/api.sock"
 allowed_users = ["conductor"]
 # 32 bytes (raw, hex or base64) that encrypt secrets stored through the API.
 state_key_credential = "state-key"
+
+# [google_first]
+# The Google-first mode (Google Workspace to AD), off by default; see
+# docs/google-first.md. conductor-sync only plans (read-only on both
+# sides); conductor applies through conductor-provisioner. A managed OU
+# may not overlap source.user_bases or source.group_bases, and a selected
+# org unit may not be a target of [mapping].
+# enabled = false
+# google_domain = "example.com"
+#
+# [[google_first.scopes]]
+# name = "people"
+# mode = "dry-run"
+# managed_ou = "OU=People,OU=Google,DC=example,DC=com"
+# groups_ou = "OU=Groups,OU=People,OU=Google,DC=example,DC=com"
+# quarantine_ou = "OU=Quarantine,OU=People,OU=Google,DC=example,DC=com"
+# org_units = ["/Staff"]
+# sub_org_units = true
+# member_of = []
+# fields = ["title", "department"]
+# logon_template = "{given}.{family}"

@@ -39,6 +39,8 @@ type fakeSource struct {
 	pings        int
 	lastCfg      *config.Config
 	lastPassword string
+	// g2a answers the Google-first reads (g2a_test.go).
+	g2a *fakeAD
 }
 
 func (f *fakeSource) Ping(context.Context) (string, error) {

@@ -31,7 +31,16 @@ func Call(ctx context.Context, socketPath string, req Request) (Response, error)
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	if err := WriteMessage(conn, req); err != nil {
-		return Response{}, err
+		if ctx.Err() != nil {
+			return Response{}, ctx.Err()
+		}
+		if errors.Is(err, ErrTooLarge) {
+			return Response{}, err
+		}
+		// The server closed the connection before reading the request (a
+		// peer it does not admit, or a server going away): the same as a
+		// connection closed before the answer.
+		return Response{}, &Error{Code: CodeUnavailable, Message: "sending the request: " + err.Error()}
 	}
 	var resp Response
 	if err := ReadMessage(bufio.NewReaderSize(conn, 64<<10), &resp); err != nil {

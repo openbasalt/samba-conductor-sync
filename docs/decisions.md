@@ -426,3 +426,60 @@ password on it, from conductor's self-service. Details:
     (`self_service` absent while every value is the default, as decision 51
     does for the adopted rules). An activation run does not supersede a plan
     under review and is never applicable from the runs page.
+
+## Google-first mode: the plan (2026-10-09)
+
+The other direction, for organizations whose people live in Google
+Workspace: conductor-sync plans the AD changes, conductor applies them
+through conductor-provisioner. Details: [google-first.md](google-first.md).
+
+67. conductor-sync stays read-only on both sides. `g2a.plan` reads Google
+    with the read-only scopes and AD with the read-only account; it holds
+    no AD write right. The only writer is conductor-provisioner, with an
+    account delegated on the managed OUs; conductor reports what it applied
+    with `g2a.confirm` so the links are recorded and the run is closed.
+68. Identity is the immutable Google user ID, on the AD object as
+    `google-first:<id>` in `msDS-cloudExtensionAttribute1` and in the
+    `g2a_links` table. A schema without that attribute refuses the mode;
+    no other attribute is used as a fallback, so a marker can never land on
+    an attribute something else already uses. A recreated Google account
+    (new ID) is a new person: the old AD account is disabled and the new
+    one is never matched to it (`marker-mismatch`).
+69. Privileged accounts are out of scope (P1), with the privilege index
+    of the `ad` module (nested membership of the administrative groups and
+    of the role groups conductor passes, `adminCount`, rights on protected
+    objects). They are listed as skipped with the reasons, never touched,
+    even when Google suspends or deletes them. Google administrator flags
+    are ignored for AD: super administrators and the admin subject are
+    never created, and the flag changes nothing for a managed account.
+70. Google wins on its fields (P2). The link keeps the Google values last
+    applied, so the plan can tell `google-change` from `ad-drift`; both are
+    `ad.user.update` and count toward `max_updates`. A different `mail` is a
+    rename only when the stored value says Google changed it; otherwise it
+    is a drift correction, and no proxy address is made from a value Google
+    never had.
+71. Never delete. A suspended, deleted or deselected Google account is
+    disabled and moved to the scope's quarantine OU; it is re-enabled only
+    when the sync disabled it. An account an AD administrator disabled is
+    never re-enabled, and a new account waiting for its invitation
+    (disabled, `pwdLastSet` 0) is left alone.
+72. The two directions never meet: a managed OU may not be inside or
+    contain an AD to Google base, a selected org unit may not be a target
+    of the AD to Google mapping, Google accounts with the AD to Google
+    marker are skipped, and an account selected by two scopes is left
+    alone by both. Validation refuses the configuration version otherwise.
+73. Reads fail closed: a scope that selects nobody, an org unit without any
+    account (the read-only scopes do not list org units, so a missing and
+    an empty org unit look the same and both stop), or a missing group
+    stops the read and records a failed run without a plan.
+74. Deterministic plans and digest-bound confirmation. Operations are
+    sorted by apply order and Google ID and numbered across the plan; the
+    digest covers every scope's operations. `g2a.confirm` refuses results
+    that are not in the plan, or that belong to a scope in dry-run or
+    blocked by its limits, and a run is confirmed once.
+75. Plans are runs of action `g2a`, listed with the others, but they never
+    count as AD to Google runs (last run, blocked runs, the plan under
+    review). The operations were added without a protocol version change:
+    the settings travel as `google_first`, absent while the mode is off
+    with no scope, and an older conductor-sync answers that the operations
+    are not allowlisted.

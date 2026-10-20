@@ -136,6 +136,10 @@ type TargetUser struct {
 	// Protected accounts (target administrators, the delegated admin the
 	// connector acts as) are never suspended or renamed by the sync.
 	Protected bool
+	// Admin is set for a super administrator of the target (Google:
+	// isAdmin). Protected covers it; the Google-first selection excludes
+	// super administrators but not delegated administrators.
+	Admin bool
 	// Adopted is set when the account carries the sync's adoption mark: it
 	// existed before the sync and was taken over by address, not created.
 	Adopted bool

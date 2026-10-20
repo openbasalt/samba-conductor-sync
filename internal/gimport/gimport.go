@@ -337,3 +337,24 @@ func nonNil(s []string) []string {
 	}
 	return s
 }
+
+// InOrgUnits reports whether an org unit path is selected by the filters
+// (equal to one of them, or below one with sub; no filter selects
+// everything). The Google-first selection uses the same rule.
+func InOrgUnits(ou string, filters []string, sub bool) bool { return inOrgUnits(ou, filters, sub) }
+
+// MembersOf returns the user addresses that are members, nested
+// membership included, of any of the groups named by roots (addresses),
+// and the roots that do not exist. Nil members when roots is empty.
+func MembersOf(groups []model.TargetGroup, roots []string) (members map[string]bool, missing []string) {
+	byEmail := map[string]*model.TargetGroup{}
+	for i := range groups {
+		byEmail[model.NormalizeEmail(groups[i].Email)] = &groups[i]
+	}
+	for _, r := range roots {
+		if byEmail[model.NormalizeEmail(r)] == nil {
+			missing = append(missing, r)
+		}
+	}
+	return transitiveUsers(byEmail, roots), missing
+}

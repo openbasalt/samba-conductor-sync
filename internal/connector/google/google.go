@@ -306,6 +306,7 @@ func (g *Connector) toModel(u *apiUser) model.TargetUser {
 		t.Attrs[model.FieldOrgUnit] = "/"
 	}
 	t.Protected = u.IsAdmin || u.IsDelegatedAdmin || strings.EqualFold(u.PrimaryEmail, g.cfg.AdminSubject)
+	t.Admin = u.IsAdmin
 	for _, e := range u.ExternalIDs {
 		switch {
 		case str(e, "type") == "custom" && str(e, "customType") == g.cfg.Marker:

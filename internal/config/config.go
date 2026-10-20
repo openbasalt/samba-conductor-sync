@@ -196,6 +196,8 @@ type Config struct {
 	Delete      Delete        `toml:"delete"`
 	Schedule    Schedule      `toml:"schedule"`
 	API         API           `toml:"api"`
+	// GoogleFirst is the Google-first mode (Google Workspace to AD).
+	GoogleFirst GoogleFirst `toml:"google_first"`
 
 	// Rules is the compiled mapping (set by Load).
 	Rules *mapping.Rules `toml:"-"`
@@ -309,6 +311,7 @@ func (c *Config) finish() error {
 		}
 	}
 	errs = append(errs, c.SelfService.validate()...)
+	errs = append(errs, c.validateGoogleFirst()...)
 	c.Google.Defaults()
 	if err := c.Google.Validate(); err != nil {
 		errs = append(errs, err)

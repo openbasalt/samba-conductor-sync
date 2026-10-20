@@ -11,6 +11,7 @@
 //	conductor-sync import-plan [--org-unit PATH]... [--sub-org-units] [--member-of GROUP]... [--include-suspended]
 //	                           [--include-admins] [--groups] [--group GROUP]... [--skip-empty-groups]
 //	                           [--max-users N] [--max-groups N] [--json]
+//	conductor-sync g2a-plan [--scope NAME] [--role-group SID]... [--json]
 //	conductor-sync audit    verify | export
 //	conductor-sync check-config
 //	conductor-sync serve                     (the management API for conductor)
@@ -80,6 +81,8 @@ commands:
   delete-user    permanently delete one suspended, sync-owned account
   import-plan    read Google (read-only) and list the users and groups conductor's
                  "Import from Google Workspace" may create in AD (writes nothing)
+  g2a-plan       Google-first mode: read Google and AD (read-only) and record the
+                 plan of the AD changes conductor may apply (writes nothing else)
   audit          verify | export the hash-chained audit log
   check-config   validate the configuration and the credentials
   serve          run the local management API used by conductor's web UI
@@ -110,6 +113,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultConfig, "configuration file")
 	var imp importFlags
+	var g2aF g2aFlags
 	var (
 		all, asJSON, yes, override, scheduled bool
 		planRun                               int64
@@ -137,6 +141,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fs.StringVar(&confirm, "confirm", "", "the account's exact address (non-interactive confirmation)")
 	case "import-plan":
 		imp.register(fs)
+		fs.BoolVar(&asJSON, "json", false, "print the plan as JSON")
+	case "g2a-plan":
+		g2aF.register(fs)
 		fs.BoolVar(&asJSON, "json", false, "print the plan as JSON")
 	case "status", "audit", "check-config", "serve", "config", "key", "secret", "healthcheck":
 	default:
@@ -197,6 +204,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return mapCmd(ctx, cfg, st, kind, key, stdout, stderr)
 	case "import-plan":
 		return importPlanCmd(ctx, rt, cfg, imp.params(), asJSON, stdout, stderr)
+	case "g2a-plan":
+		return g2aPlanCmd(ctx, rt, cfg, g2aF.params(), asJSON, stdout, stderr)
 	case "audit":
 		if len(positional) != 1 {
 			fmt.Fprintln(stderr, "usage: conductor-sync audit verify|export")

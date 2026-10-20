@@ -212,8 +212,10 @@ func (s *Store) ListRuns(ctx context.Context, connector, status string, offset, 
 
 // BlockedSince returns blocked runs with an ID above after, newest first.
 func (s *Store) BlockedSince(ctx context.Context, connector string, after int64) ([]Run, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+runCols+` FROM runs WHERE connector = ? AND status = ? AND id > ? ORDER BY id DESC LIMIT 20`,
-		connector, StatusBlocked, after)
+	// Google-first runs are reported with their own plan, not as blocked
+	// AD to Google runs.
+	rows, err := s.db.QueryContext(ctx, `SELECT `+runCols+` FROM runs WHERE connector = ? AND status = ? AND id > ? AND action <> ? ORDER BY id DESC LIMIT 20`,
+		connector, StatusBlocked, after, RunActionG2A)
 	if err != nil {
 		return nil, err
 	}
@@ -229,13 +231,17 @@ func (s *Store) BlockedSince(ctx context.Context, connector string, after int64)
 	return out, rows.Err()
 }
 
-// LastRun returns the newest run of an action ("" = any) and trigger ("" =
+// LastRun returns the newest run of an action ("" = any AD to Google run:
+// Google-first runs only when asked by their action) and trigger ("" =
 // any), or nil.
 func (s *Store) LastRun(ctx context.Context, connector, action, trigger string) (*Run, error) {
 	where, args := `connector = ?`, []any{connector}
 	if action != "" {
 		where += ` AND action = ?`
 		args = append(args, action)
+	} else {
+		where += ` AND action <> ?`
+		args = append(args, RunActionG2A)
 	}
 	if trigger != "" {
 		where += ` AND trigger = ?`
@@ -295,10 +301,12 @@ func (s *Store) JournalStatus(ctx context.Context, runID int64) (map[int][2]stri
 	return out, nil
 }
 
-// HasPlan reports whether a run recorded a plan.
+// HasPlan reports whether a run recorded a plan (an AD to Google plan, or
+// the plan of a g2a run).
 func (s *Store) HasPlan(ctx context.Context, runID int64) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plans WHERE run_id = ?`, runID).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM plans WHERE run_id = ?) + (SELECT COUNT(*) FROM g2a_plans WHERE run_id = ?)`,
+		runID, runID).Scan(&n)
 	return n > 0, err
 }
 

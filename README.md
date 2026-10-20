@@ -60,12 +60,15 @@ conductor-sync config export | import [FILE] | history
 conductor-sync key set FILE | show
 conductor-sync secret status | set NAME | remove NAME
 conductor-sync import-plan [--org-unit PATH]... [--member-of ADDRESS]... [--groups] [--json] ...
+conductor-sync g2a-plan [--scope NAME] [--role-group SID]... [--json]
 ```
 
 Operator guide: [`docs/usage-p5.md`](docs/usage-p5.md) (§13: the
 management API and conductor's sync section). Mapping reference:
 [`docs/mapping.md`](docs/mapping.md). Starting AD from an existing Google
-Workspace: [`docs/import-from-google.md`](docs/import-from-google.md). Users
+Workspace: [`docs/import-from-google.md`](docs/import-from-google.md).
+Keeping AD in step with Google Workspace (Google-first mode):
+[`docs/google-first.md`](docs/google-first.md). Users
 activating their account or setting a new password from conductor's
 self-service: [`docs/self-service.md`](docs/self-service.md). Decisions:
 [`docs/decisions.md`](docs/decisions.md). Configuration example:
