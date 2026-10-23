@@ -113,8 +113,9 @@ scripts under the prefix `conductor-synclab`, network `10.95.0.0/24`, domain
 
 ## Status
 
-0.1.0 released (signed GitHub release `v0.1.0`, APT packages `0.1.0-1`,
-container image above). Engine, Google connector, CLI,
+0.2.1 released (signed GitHub release `v0.2.1`, APT packages `0.2.1-1`),
+a security update of 0.2.0 built with Go 1.27.3; the container image
+above carries an earlier version. Engine, Google connector, CLI,
 systemd units, scope and org unit placement by AD group, the management API
 used by conductor's "Google Workspace sync" section
 (<https://github.com/openbasalt/samba-conductor/blob/main/docs/usage-p5b.md>),
