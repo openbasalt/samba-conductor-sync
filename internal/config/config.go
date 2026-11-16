@@ -297,6 +297,8 @@ func (c *Config) finish() error {
 		errs = append(errs, err)
 	}
 	c.Rules = rules
+	// The write scopes include the group scope only when groups are synced.
+	c.Google.ManageGroups = rules != nil && rules.ManagesGroups() && len(c.Source.GroupBases) > 0
 	switch c.Policy.Adopt {
 	case "":
 		c.Policy.Adopt = string(plan.AdoptNever)

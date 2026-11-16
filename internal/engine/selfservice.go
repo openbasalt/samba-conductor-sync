@@ -32,7 +32,8 @@ import (
 //   - a password is set only on the user's linked account that carries the
 //     sync's marker for them, never on a target administrator (or the
 //     sync's own subject), never on a suspended account, and on an adopted
-//     account only when self_service.password_reset allows it;
+//     account only when self_service.password_reset allows it and an
+//     administrator approved that adoption individually;
 //   - actions are rate limited per user and per target;
 //   - the password (generated or chosen) goes to the target once and is
 //     returned once when generated; it is never stored, logged or audited.
@@ -185,7 +186,10 @@ func (e *Engine) inspect(ctx context.Context, conn connector.Connector, actorSID
 		case tu.Owner == su.ID && model.NormalizeEmail(tu.Attrs[model.FieldPrimaryEmail]) == email:
 			// Carries the marker: the next run relinks it.
 			a.State, a.Reason = syncapi.AccountPendingSync, syncapi.ReasonExistingAccount
-		case tu.Owner == "" && model.NormalizeEmail(tu.Attrs[model.FieldPrimaryEmail]) == email && e.Policy.Adopt == plan.AdoptEmail:
+		case tu.Owner == "" && model.NormalizeEmail(tu.Attrs[model.FieldPrimaryEmail]) == email && e.Policy.Adopt == plan.AdoptEmail &&
+			e.approvedFor(ctx, su.ID, tu.ID, email):
+			// An administrator approved its adoption: the next run adopts
+			// it (if the checks still pass).
 			a.State, a.Reason = syncapi.AccountPendingSync, syncapi.ReasonExistingAccount
 		default:
 			a.State, a.Reason = syncapi.AccountNotEligible, syncapi.ReasonAddressTaken
@@ -257,6 +261,10 @@ func (e *Engine) inspectLinked(ctx context.Context, conn connector.Connector, v 
 		a.PasswordReason = syncapi.ReasonSuspended
 	case adopted && e.SelfService.PasswordReset != "created-and-adopted":
 		a.PasswordReason = syncapi.ReasonAdopted
+	case adopted && !e.confirmed(ctx, v.link):
+		// An adopted account's password is never set unless an
+		// administrator approved (or confirmed) that adoption individually.
+		a.PasswordReason = syncapi.ReasonAdopted
 	case look.User == nil || !look.InScope:
 		a.PasswordReason = syncapi.ReasonOutOfScope
 	case !look.User.Enabled:
@@ -264,6 +272,27 @@ func (e *Engine) inspectLinked(ctx context.Context, conn connector.Connector, v 
 	default:
 		a.CanSetPassword = true
 	}
+}
+
+// approvedFor reports whether an approval names this exact pair and address.
+func (e *Engine) approvedFor(ctx context.Context, sourceID, targetID, email string) bool {
+	m, err := e.Store.ApprovalMap(ctx, e.ConnectorName)
+	if err != nil {
+		fmt.Fprintf(e.out(), "self-service: approvals: %v\n", err)
+		return false
+	}
+	ap, ok := m[plan.AdoptionKey(model.KindUser, sourceID)]
+	return ok && ap.TargetID == targetID && model.NormalizeEmail(ap.Address) == email
+}
+
+// confirmed is adoptionConfirmed, false on a read error (fail closed).
+func (e *Engine) confirmed(ctx context.Context, l *store.LinkRow) bool {
+	ok, err := e.adoptionConfirmed(ctx, l)
+	if err != nil {
+		fmt.Fprintf(e.out(), "self-service: approvals: %v\n", err)
+		return false
+	}
+	return ok
 }
 
 // newPassword returns the password of an action: the user's own (checked

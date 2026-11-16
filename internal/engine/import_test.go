@@ -75,7 +75,10 @@ func TestImportThenAdopt(t *testing.T) {
 	}
 	e.src.Groups = []model.SourceGroup{sg}
 
-	// 3. The sync adopts everything and changes nothing else.
+	// 3. An administrator approves each adoption; the sync adopts
+	// everything and changes nothing else.
+	e.fake.RoleScopes[fakegoogle.ScopeRoleReadonly] = true
+	e.approveAll()
 	c := e.plan()
 	counts := c.Plan.Counts()
 	if counts[plan.UserAdopt] != 2 || counts[plan.GroupAdopt] != 1 || counts[plan.UserCreate] != 0 || counts[plan.GroupCreate] != 0 ||

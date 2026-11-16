@@ -268,7 +268,7 @@ func TestManagementFlow(t *testing.T) {
 	// Connection test with the stored key.
 	var tr syncapi.TestResult
 	e.must(syncapi.OpConnectionTest, syncapi.ConnectionTestParams{}, &tr)
-	if !tr.AD.OK || !tr.Google.OK || !strings.Contains(tr.Google.Detail, "administrator") {
+	if !tr.AD.OK || !tr.Google.OK || !strings.Contains(tr.Google.Detail, "its own role") {
 		t.Fatalf("test %+v", tr)
 	}
 

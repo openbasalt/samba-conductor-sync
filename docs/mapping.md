@@ -107,8 +107,8 @@ address as an alias, so mail keeps arriving. Renames have their own limit
 Two AD users that render the same address are both left alone (warning
 `duplicate-address`) until one is fixed. An address that already belongs to
 a Google account the sync does not own is reported (`unmanaged-exists`)
-and left alone unless `policy.adopt = "email"` (see "Adopting an existing
-Google Workspace" below).
+and left alone unless `policy.adopt = "email"` and an administrator approved
+that adoption (see "Adopting an existing Google Workspace" below).
 
 ## Scope
 
@@ -175,8 +175,47 @@ the users and groups can first be created in AD from Google, once
 ([import-from-google.md](import-from-google.md)). To connect AD to it, start with
 `policy.adopt = "email"` and add users to the AD scope gradually: each AD
 user whose rendered address equals an existing account's primary address
-is adopted. Adoption takes the account over; it does not recreate, reset,
-move, rename or delete it.
+becomes an adoption candidate, which an administrator approves one by one.
+Adoption takes the account over; it does not recreate, reset, move, rename
+or delete it.
+
+### Approvals
+
+Whoever can edit the AD attribute that feeds the address (`mail`, for
+instance) could otherwise point an AD user they control at someone else's
+Google account and take it over. So adoption is never automatic:
+
+- `policy.adopt = "never"` (the default): no candidate, existing accounts
+  are reported as `unmanaged-exists`.
+- `policy.adopt = "email"`: each match is listed in the plan as a candidate
+  (`adoption-pending`) and nothing is written to it; the AD user gets no
+  account and no group membership until then.
+- `conductor-sync adopt list` shows the candidates of the latest plan (the
+  AD account, its DN and objectGUID, the target ID and address) and the
+  approvals. `conductor-sync adopt approve --kind user|group --source GUID
+  --target ID [--comment TEXT]` approves one candidate; `adopt revoke`
+  removes an approval. Approvals and refusals are in the audit log, and the
+  adoption operation's reason names the approver.
+- An approval is bound to the AD object, the target object and the address:
+  if the AD address or the matching target object changes, it no longer
+  applies (`approval-stale`) and must be given again.
+
+Never adoptable, approved or not (`adoption-refused` with the reason):
+
+| Reason | When |
+|---|---|
+| `target-administrator` | the Google account is a super or delegated administrator, or the delegated mode's admin subject |
+| `ad-privileged` | the AD object is privileged in the domain (administrative groups, `adminCount`, rights on protected objects) |
+| `address-not-unique` | another AD object of the whole directory (not only the scope) carries the address in `mail`, `userPrincipalName` or `proxyAddresses` |
+| `group-holds-admin-role` | the Google group holds an administrator role assignment |
+| `group-roles-unknown` | the role assignments could not be read (see [google-credentials.md](google-credentials.md)); no group is adopted then |
+| `not-checked` | the AD checks did not run for the candidate |
+
+The AD checks run when the approval is given and again in every plan that
+would adopt the object. The self-service password reset of an adopted
+account (`password_reset = "created-and-adopted"`) also requires its
+approval: an account adopted before approvals existed needs one
+(`adopt approve` with the link's AD objectGUID and target ID confirms it).
 
 What adoption does, on the adoption run:
 
@@ -230,9 +269,9 @@ Later effects, which are the normal sync rules:
   says.
 
 A plan shows every adoption as `user.adopt` or `group.adopt` with the
-fields it changes; the reason lists the fields whose AD value differs but
-is kept on the account (`adopt existing account by address; kept on the
-account: org_unit`).
+fields it changes; the reason names the approver and lists the fields whose
+AD value differs but is kept on the account (`adopt existing account by
+address, approved by admin; kept on the account: org_unit`).
 
 Rollout:
 
@@ -240,10 +279,13 @@ Rollout:
    above. Use small limits (`max_updates`, `max_creates`, `max_suspends`,
    `max_touched_percent`).
 2. Put a few AD users in the scope (an include group is a convenient
-   switch), plan, and read every `user.adopt`: the changes must be only
-   the names you expect. Check the warnings (`unmanaged-exists` for
-   addresses that differ in case or domain, `alias-collision` when the AD
-   address is an alias of another account, `disabled-not-adopted`).
+   switch), plan, and review the candidates (`conductor-sync adopt list`):
+   for each one, confirm that the AD user and the Google account are the
+   same person, then `adopt approve` it. Plan again and read every
+   `user.adopt`: the changes must be only the names you expect. Check the
+   warnings (`adoption-refused`, `unmanaged-exists` for addresses that
+   differ in case or domain, `alias-collision` when the AD address is an
+   alias of another account, `disabled-not-adopted`).
 3. Apply manually, check the accounts in the Admin console, then grow the
    scope in batches. Adoptions count toward `max_updates` and
    `max_touched_percent` (the share of the accounts already managed), so

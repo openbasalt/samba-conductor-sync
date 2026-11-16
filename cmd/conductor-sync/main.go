@@ -8,6 +8,7 @@
 //	conductor-sync history  [--limit N] [--run RUN]
 //	conductor-sync map      [--kind user|group] [KEY]
 //	conductor-sync delete-user KEY [--confirm ADDRESS]
+//	conductor-sync adopt    list | approve --kind user|group --source GUID --target ID [--comment TEXT] | revoke --kind user|group --source GUID
 //	conductor-sync import-plan [--org-unit PATH]... [--sub-org-units] [--member-of GROUP]... [--include-suspended]
 //	                           [--include-admins] [--groups] [--group GROUP]... [--skip-empty-groups]
 //	                           [--max-users N] [--max-groups N] [--json]
@@ -79,6 +80,8 @@ commands:
   history        recent runs, or one run's plan and journal (--run)
   map            the AD object <-> target object links
   delete-user    permanently delete one suspended, sync-owned account
+  adopt          list | approve | revoke the adoption of existing Google accounts and
+                 groups (policy.adopt = "email" never adopts without an approval)
   import-plan    read Google (read-only) and list the users and groups conductor's
                  "Import from Google Workspace" may create in AD (writes nothing)
   g2a-plan       Google-first mode: read Google and AD (read-only) and record the
@@ -118,6 +121,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		all, asJSON, yes, override, scheduled bool
 		planRun                               int64
 		digest, kind, confirm                 string
+		adoptSource, adoptTarget, comment     string
 		limit                                 int
 		runID                                 int64
 	)
@@ -139,6 +143,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fs.StringVar(&kind, "kind", "", "user or group")
 	case "delete-user":
 		fs.StringVar(&confirm, "confirm", "", "the account's exact address (non-interactive confirmation)")
+	case "adopt":
+		fs.StringVar(&kind, "kind", "user", "user or group")
+		fs.StringVar(&adoptSource, "source", "", "the AD objectGUID of the candidate")
+		fs.StringVar(&adoptTarget, "target", "", "the target ID of the existing account or group")
+		fs.StringVar(&comment, "comment", "", "why it is approved (audited)")
 	case "import-plan":
 		imp.register(fs)
 		fs.BoolVar(&asJSON, "json", false, "print the plan as JSON")
@@ -248,6 +257,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return deleteUser(ctx, cfg, eng, positional[0], confirm, stdin, stdout, stderr)
+	case "adopt":
+		return adoptCmd(ctx, eng, positional, model.Kind(kind), adoptSource, adoptTarget, comment, stdout, stderr)
 	}
 	return exitUsage
 }

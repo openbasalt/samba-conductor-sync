@@ -18,7 +18,24 @@ func adoptIn() Input {
 	t.Attrs[model.FieldOrgUnit] = "/Sales"
 	t.Attrs[model.FieldGivenName] = "Ana Maria"
 	t.Attrs[model.FieldFamilyName] = "Lima Souza"
-	return Input{Users: []model.SourceUser{s}, TargetUsers: []model.TargetUser{t}, Policy: Policy{Adopt: AdoptEmail, SuspendDisabled: true}}
+	in := Input{Users: []model.SourceUser{s}, TargetUsers: []model.TargetUser{t}, Policy: Policy{Adopt: AdoptEmail, SuspendDisabled: true}}
+	approve(&in, model.KindUser, "a", "1", "ana@x.com")
+	return in
+}
+
+// approve records an administrator's approval of one candidate and a clean
+// source check for it.
+func approve(in *Input, kind model.Kind, sourceID, targetID, address string) {
+	if in.Approvals == nil {
+		in.Approvals = map[string]Approval{}
+		in.AdoptChecks = map[string]AdoptionCheck{}
+	}
+	k := AdoptionKey(kind, sourceID)
+	in.Approvals[k] = Approval{Kind: kind, SourceID: sourceID, TargetID: targetID, Address: address, By: "admin"}
+	in.AdoptChecks[k] = AdoptionCheck{}
+	if kind == model.KindGroup {
+		in.GroupRolesKnown = true
+	}
 }
 
 func changed(o Op) map[string]string {
@@ -268,6 +285,7 @@ func groupIn() Input {
 			{Email: "partner@other.com", Kind: model.KindUser},  // unmanaged
 			{ID: "1", Email: "ana@x.com", Kind: model.KindUser}, // managed, in the AD group
 		}}}
+	approve(&in, model.KindGroup, "g", "G", "sales@x.com")
 	return in
 }
 

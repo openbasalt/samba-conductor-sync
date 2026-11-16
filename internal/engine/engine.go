@@ -249,9 +249,22 @@ func (e *Engine) computeWith(ctx context.Context, c connector.Connector, activat
 	if activate != "" {
 		activated[activate] = true
 	}
-	p := plan.Compute(plan.Input{Connector: e.ConnectorName, Users: src.Users, Groups: src.Groups,
+	in := plan.Input{Connector: e.ConnectorName, Users: src.Users, Groups: src.Groups,
 		TargetUsers: snap.Users, TargetGroups: snap.Groups, Links: links, InFlight: inflightOf(inflight), Policy: e.Policy,
-		Activated: activated})
+		Activated: activated}
+	if e.Policy.Adopt == plan.AdoptEmail {
+		if in.Approvals, err = e.Store.ApprovalMap(ctx, e.ConnectorName); err != nil {
+			return nil, err
+		}
+	}
+	p := plan.Compute(in)
+	if need := p.NeedsChecks(); len(need) > 0 {
+		// Approved candidates: run the checks and plan again with them.
+		if err := e.adoptionChecks(ctx, c, &in, need); err != nil {
+			return nil, err
+		}
+		p = plan.Compute(in)
+	}
 	// Display fields (not part of the digest).
 	p.Scope, p.NotIncluded, p.Excluded = src.Scope, src.NotIncluded, src.Excluded
 	for _, s := range src.Skipped {
@@ -271,6 +284,45 @@ func (e *Engine) computeWith(ctx context.Context, c connector.Connector, activat
 		dns[g.ID] = g.DN
 	}
 	return &Computed{Plan: p, Violations: e.Limits.Check(p, prev), Skipped: src.Skipped, PreviousSourceUsers: prev, sourceDNs: dns}, nil
+}
+
+// adoptionChecks fills in the checks of the approved adoption candidates:
+// the source's privilege and address uniqueness checks and, when a group is
+// among them, the target's administrator role assignments. A source that
+// can not check leaves every candidate refused (not-checked); a check read
+// that fails stops the plan (it is never treated as "nothing found"); a
+// role read that fails leaves the roles unknown, which refuses every group
+// adoption.
+func (e *Engine) adoptionChecks(ctx context.Context, c connector.Connector, in *plan.Input, need []plan.Candidate) error {
+	checker, ok := e.Source.(source.AdoptionChecker)
+	if !ok {
+		// Fail closed: without checks the candidates stay refused.
+		fmt.Fprintln(e.out(), "warning: the source can not check adoption candidates; nothing is adopted")
+		return nil
+	}
+	qs := make([]source.AdoptionQuery, 0, len(need))
+	groups := false
+	for _, cand := range need {
+		qs = append(qs, source.AdoptionQuery{Kind: cand.Kind, ID: cand.SourceID, Address: cand.Address})
+		groups = groups || cand.Kind == model.KindGroup
+	}
+	checks, err := checker.CheckAdoption(ctx, qs)
+	if err != nil {
+		return fmt.Errorf("adoption checks: %w", err)
+	}
+	in.AdoptChecks = checks
+	if groups {
+		in.GroupRolesKnown = false
+		if rr, ok := c.(connector.RoleReader); ok {
+			roles, err := rr.AdminRoleGroups(ctx)
+			if err != nil {
+				fmt.Fprintf(e.out(), "warning: %v; no group is adopted\n", err)
+			} else {
+				in.GroupRolesKnown, in.AdminRoleGroups = true, roles
+			}
+		}
+	}
+	return nil
 }
 
 // Summary is what a run records about its plan (runs.summary).

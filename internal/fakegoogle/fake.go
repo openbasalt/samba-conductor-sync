@@ -36,7 +36,16 @@ const (
 	ScopeUserReadonly  = "https://www.googleapis.com/auth/admin.directory.user.readonly"
 	ScopeGroup         = "https://www.googleapis.com/auth/admin.directory.group"
 	ScopeGroupReadonly = "https://www.googleapis.com/auth/admin.directory.group.readonly"
+	ScopeRoleReadonly  = "https://www.googleapis.com/auth/admin.directory.rolemanagement.readonly"
 )
+
+// RoleAssignment is one administrator role assignment (assignedTo is a
+// user or group ID).
+type RoleAssignment struct {
+	RoleID       string `json:"roleId"`
+	AssignedTo   string `json:"assignedTo"`
+	AssigneeType string `json:"assigneeType"`
+}
 
 // User is a stored account.
 type User struct {
@@ -112,6 +121,15 @@ type Server struct {
 	// Delegated are the scopes authorized for the client (domain-wide
 	// delegation); a token request for any other scope is refused.
 	Delegated map[string]bool
+	// DelegationEnabled accepts assertions with a sub (domain-wide
+	// delegation); RoleAssigned accepts assertions without one (the
+	// service account acts as itself with an administrator role, whose
+	// privileges are RoleScopes). Both default to true.
+	DelegationEnabled bool
+	RoleAssigned      bool
+	RoleScopes        map[string]bool
+	// RoleAssignments are listed by roleassignments.list.
+	RoleAssignments []RoleAssignment
 	// PageSize caps list pages (small values exercise pagination).
 	PageSize int
 	// Latency delays every API request.
@@ -125,6 +143,7 @@ type Server struct {
 	key      *rsa.PrivateKey
 	tokenURL string
 	tokens   map[string]map[string]bool
+	subjects []string
 
 	users    map[string]*User
 	groups   map[string]*Group
@@ -143,18 +162,29 @@ func New(domains ...string) *Server {
 		panic(err)
 	}
 	return &Server{
-		Domains:      domains,
-		AdminSubject: "admin@" + domains[0],
-		ClientEmail:  "sync@project.iam.gserviceaccount.com",
-		Delegated:    map[string]bool{ScopeUser: true, ScopeUserReadonly: true, ScopeGroup: true, ScopeGroupReadonly: true},
-		PageSize:     100,
-		key:          k,
-		tokens:       map[string]map[string]bool{},
-		users:        map[string]*User{},
-		groups:       map[string]*Group{},
-		orgUnits:     map[string]bool{"/": true},
-		nextID:       100000,
+		Domains:           domains,
+		AdminSubject:      "admin@" + domains[0],
+		ClientEmail:       "sync@project.iam.gserviceaccount.com",
+		Delegated:         map[string]bool{ScopeUser: true, ScopeUserReadonly: true, ScopeGroup: true, ScopeGroupReadonly: true},
+		RoleScopes:        map[string]bool{ScopeUser: true, ScopeUserReadonly: true, ScopeGroup: true, ScopeGroupReadonly: true},
+		DelegationEnabled: true,
+		RoleAssigned:      true,
+		PageSize:          100,
+		key:               k,
+		tokens:            map[string]map[string]bool{},
+		users:             map[string]*User{},
+		groups:            map[string]*Group{},
+		orgUnits:          map[string]bool{"/": true},
+		nextID:            100000,
 	}
+}
+
+// TokenSubjects returns the sub claim of every token issued so far ("" for
+// a service account acting as itself).
+func (s *Server) TokenSubjects() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.subjects...)
 }
 
 // SetTokenURL tells the fake its own token URL (the JWT audience).
@@ -527,13 +557,21 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	case claims.Exp < now || claims.Iat > now+300 || claims.Exp-claims.Iat > 3600:
 		tokenErr("invalid_grant", "Invalid JWT: Token must be a short-lived token")
 		return
-	case !strings.EqualFold(claims.Sub, s.AdminSubject):
+	case claims.Sub != "" && (!s.DelegationEnabled || !strings.EqualFold(claims.Sub, s.AdminSubject)):
 		tokenErr("unauthorized_client", "Client is unauthorized to retrieve access tokens using this method, or client not authorized for any of the scopes requested.")
 		return
+	case claims.Sub == "" && !s.RoleAssigned:
+		tokenErr("unauthorized_client", "Not Authorized to access this resource/api")
+		return
+	}
+	s.subjects = append(s.subjects, claims.Sub)
+	allowed := s.Delegated
+	if claims.Sub == "" {
+		allowed = s.RoleScopes
 	}
 	scopes := map[string]bool{}
 	for _, sc := range strings.Fields(claims.Scope) {
-		if !s.Delegated[sc] {
+		if !allowed[sc] {
 			tokenErr("unauthorized_client", "Client is unauthorized to retrieve access tokens using this method, or client not authorized for any of the scopes requested.")
 			return
 		}
@@ -594,6 +632,9 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	need := []string{ScopeUserReadonly, ScopeUser}
 	if strings.HasPrefix(path, "/groups") {
 		need = []string{ScopeGroupReadonly, ScopeGroup}
+	}
+	if strings.HasPrefix(path, "/customer/") {
+		need = []string{ScopeRoleReadonly, ScopeRoleReadonly}
 	}
 	if write {
 		need = need[1:]
@@ -717,6 +758,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request, path string) {
 		default:
 			writeErr(w, http.StatusMethodNotAllowed, "badRequest", "method")
 		}
+	case len(seg) == 3 && seg[0] == "customer" && seg[2] == "roleassignments" && r.Method == http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"kind": "admin#directory#roleAssignments", "items": s.RoleAssignments})
 	case len(seg) >= 3 && seg[0] == "groups" && seg[2] == "members":
 		g := s.groupByKey(seg[1])
 		if g == nil {

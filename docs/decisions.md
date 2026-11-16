@@ -9,8 +9,9 @@ is [design.md](design.md); family-wide design is in
 1. No Google client library. The connector calls the half-dozen Admin
    SDK Directory endpoints (users list/get/insert/patch/delete, groups
    list/get/insert/patch, members list/insert/delete) and the OAuth token
-   endpoint directly with `net/http`. The JWT bearer grant (RFC 7523) with
-   domain-wide delegation is about 60 lines (RS256 with `crypto/rsa`).
+   endpoint directly with `net/http`. The JWT bearer grant (RFC 7523) is
+   about 60 lines (RS256 with `crypto/rsa`); see decision 82 for how the
+   service account is authorized.
    `google.golang.org/api` and `golang.org/x/oauth2` would add a large
    dependency tree for a handful of calls; the fake API also stays simple.
 2. Connector interface = snapshot + typed operations. `Snapshot`,
@@ -50,7 +51,8 @@ is [design.md](design.md); family-wide design is in
    audited.
 9. Ownership: the sync changes only accounts it links or that carry its
    marker. An existing account with the same address is reported, not
-   taken over, unless `adopt = "email"`. A marker with a different
+   taken over, unless `adopt = "email"` and an administrator approved that
+   adoption (decisions 76 to 81). A marker with a different
    objectGUID (an AD account deleted and recreated) is a conflict, not a
    takeover. Two instances on one tenant need different markers.
 10. Suspension provenance: `suspended_by_sync` (and `suspended_at`) on
@@ -483,3 +485,70 @@ through conductor-provisioner. Details: [google-first.md](google-first.md).
     the settings travel as `google_first`, absent while the mode is off
     with no scope, and an older conductor-sync answers that the operations
     are not allowlisted.
+
+## Approved adoptions and least-privilege credentials (2026-11-16)
+
+From the security review of 2026-11-13. Adoption by address let anyone who
+can edit the AD attribute feeding the address (a helpdesk operator with
+write access to `mail` on an OU in scope) take over an existing Google
+account or group; and a domain-wide delegation key let its holder
+impersonate any user, super administrators included.
+
+76. Adoption by address is never automatic. `adopt = "email"` keeps its name
+    but now only lists matches as candidates (`Plan.Candidates`, display
+    only, not in the digest; warning `adoption-pending`). An administrator
+    approves one candidate at a time (`conductor-sync adopt approve`), and
+    the approval is stored in `adoption_approvals` (migration 006) bound to
+    the AD objectGUID, the target ID and the address. A changed address or
+    target makes it stale. An installation that had `adopt = "email"` keeps
+    its existing links and adopts nothing new until approvals are given:
+    the stricter reading of the old setting.
+77. Never adoptable, approved or not: target administrators (`Protected`),
+    AD objects that the `ad` privilege index reports (administrative
+    groups, `adminCount`, rights on protected objects), addresses that any
+    other AD object of the directory carries in `mail`, `userPrincipalName`
+    or `proxyAddresses` (the source attribute must be unique in the whole
+    directory, not only in the scope), and Google groups that hold an
+    administrator role assignment. The AD checks run when the approval is
+    given and again in every plan that would adopt; a source that can not
+    check, or a candidate the checks did not answer for, is refused
+    (`not-checked`). A failed AD check read stops the plan.
+78. The role assignments are read only when an approved group candidate
+    exists, with a separate token and the
+    `admin.directory.rolemanagement.readonly` scope only. If the read
+    fails, every group candidate is refused (`group-roles-unknown`); the
+    main token never gains the scope.
+79. The approval, every refused approval and the adoption itself are in
+    the audit log; the adoption operation's reason names the approver, so
+    the digest binds the reviewed plan to who approved it.
+80. A comparison of `whenChanged` or replication metadata against an
+    adoption window (also suggested by the review) was not added: the
+    approval binds the exact address an administrator saw, so a later
+    attribute change voids it, and a change before the approval is visible
+    to that administrator in the candidate list.
+81. The self-service password reset of an adopted account (with
+    `password_reset = "created-and-adopted"`) also requires a matching
+    approval. Links adopted before this change have none; `adopt approve`
+    with the link's objectGUID and target ID confirms them. The management
+    API has no adoption operation yet: approvals are given on the host
+    (CLI), and conductor shows adopted accounts as before.
+82. The service account acts as itself by default
+    (`google.auth_mode = "service-account"`): no `sub` claim, and it holds a
+    custom administrator role with only the user (and, when groups are
+    synced, group) privileges, organization unit read, and role read for
+    group adoption. Domain-wide delegation stays available only as
+    `auth_mode = "domain-wide-delegation"`, set explicitly in the file
+    (never through the management API, like the other host settings),
+    with `admin_subject` required there; every command and every start of
+    the service prints a warning, and the connection test says so. A
+    configuration without the key is in the service-account mode, so an
+    installation that relied on delegation must add the key (migration in
+    [google-credentials.md](google-credentials.md)). The new mode is tested
+    against the fake only; it has not been validated against a live tenant.
+83. Scopes are the minimum per use: read-only for plans and reads; the
+    user write scope for applies, and the group write scope only when
+    groups are synced; the role read scope on its own token.
+84. Credential files outside `$CREDENTIALS_DIRECTORY` must be regular
+    files opened without following a symbolic link, owned by the process
+    user or root, with no group or other permission; the checks run on the
+    opened file (no window between check and read).

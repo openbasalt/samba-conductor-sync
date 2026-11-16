@@ -24,6 +24,7 @@ import (
 	"github.com/openbasalt/samba-conductor-sync/internal/engine"
 	"github.com/openbasalt/samba-conductor-sync/internal/gimport"
 	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
 	"github.com/openbasalt/samba-conductor-sync/internal/secret"
 	"github.com/openbasalt/samba-conductor-sync/internal/secretbox"
 	"github.com/openbasalt/samba-conductor-sync/internal/source"
@@ -91,6 +92,10 @@ func Open(ctx context.Context, path string, stderr io.Writer) (*Runtime, error) 
 		return nil, err
 	}
 	secret.FallbackDir = cfg.CredentialsDir
+	if cfg.Google.Delegated() && stderr != nil {
+		// Every command and every start of the service says it (journal).
+		fmt.Fprintln(stderr, google.DelegationWarning)
+	}
 	if err := cfg.EnsureStateDir(); err != nil {
 		return nil, fmt.Errorf("state directory: %w", err)
 	}
@@ -611,4 +616,13 @@ func (l *LazySource) Preview(ctx context.Context, query string, limit int) ([]ad
 		return nil, nil, err
 	}
 	return r.Preview(ctx, query, limit)
+}
+
+// CheckAdoption implements source.AdoptionChecker.
+func (l *LazySource) CheckAdoption(ctx context.Context, qs []source.AdoptionQuery) (map[string]plan.AdoptionCheck, error) {
+	r, err := l.reader()
+	if err != nil {
+		return nil, err
+	}
+	return r.CheckAdoption(ctx, qs)
 }

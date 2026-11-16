@@ -226,8 +226,19 @@ func TestSelfServiceEligibility(t *testing.T) {
 	if a := e.status(5); a.State != syncapi.AccountNotEligible || a.Reason != syncapi.ReasonAddressTaken {
 		t.Fatalf("taken: %+v", a)
 	}
-	// ... or linked by the next run (adopt = email): never by activation.
+	// ... still taken with adopt = email until an administrator approves
+	// the adoption ...
 	e.eng.Policy.Adopt = plan.AdoptEmail
+	if a := e.status(5); a.State != syncapi.AccountNotEligible || a.Reason != syncapi.ReasonAddressTaken {
+		t.Fatalf("unapproved: %+v", a)
+	}
+	// ... then linked by the next run: never by activation. (The approval
+	// is recorded directly: approving through the engine records a plan
+	// run, and this test counts runs below.)
+	if err := e.st.PutApproval(ctx, "google", plan.Approval{Kind: model.KindUser, SourceID: guid(5),
+		TargetID: e.userByEmail("user0005@example.com").ID, Address: "user0005@example.com", By: "admin"}, ""); err != nil {
+		t.Fatal(err)
+	}
 	if a := e.status(5); a.State != syncapi.AccountPendingSync || a.Reason != syncapi.ReasonExistingAccount || a.CanActivate {
 		t.Fatalf("adoptable: %+v", a)
 	}
@@ -298,12 +309,19 @@ func TestSelfServiceSetPassword(t *testing.T) {
 	if _, err := e.eng.SetPassword(ctx, usid(1), generate); reasonOf(err) != syncapi.ReasonNotLinked {
 		t.Fatalf("reset before the account exists: %v", err)
 	}
-	// user0003 exists in Google before the sync and is adopted; user0004
-	// is a Google administrator, adopted too.
+	// user0003 exists in Google before the sync and is adopted after an
+	// approval; user0004 is a Google administrator: never adoptable.
 	e.fake.SeedUser(fakegoogle.User{PrimaryEmail: "user0003@example.com", Name: map[string]any{"givenName": "User", "familyName": "0003"}})
 	e.fake.SeedUser(fakegoogle.User{PrimaryEmail: "user0004@example.com", IsAdmin: true, Name: map[string]any{"givenName": "User", "familyName": "0004"}})
 	e.eng.Policy.Adopt = plan.AdoptEmail
+	e.approveAll()
 	e.mustApply(engine.ApplyOptions{OverrideLimits: true})
+	if _, err := e.eng.ApproveAdoption(ctx, engine.ApproveRequest{Kind: model.KindUser, SourceID: guid(4), TargetID: e.userByEmail("user0004@example.com").ID}); !errors.Is(err, engine.ErrApprovalRefused) {
+		t.Fatalf("approval of an administrator: %v", err)
+	}
+	if ownerOf(e.userByEmail("user0004@example.com")) != "" {
+		t.Fatal("a Google administrator was adopted")
+	}
 	e.fake.ResetCounters()
 
 	res, err := e.eng.SetPassword(ctx, usid(1), generate)
@@ -341,10 +359,21 @@ func TestSelfServiceSetPassword(t *testing.T) {
 	if u := e.userByEmail("user0003@example.com"); u.PasswordChanges != 0 || u.PasswordSet {
 		t.Fatalf("adopted account password touched: %+v", u)
 	}
-	// Administrators: never, whatever the policy.
+	// Administrators: never, whatever the policy (not even linked).
 	e.eng.SelfService.PasswordReset = "created-and-adopted"
-	if _, err := e.eng.SetPassword(ctx, usid(4), generate); reasonOf(err) != syncapi.ReasonAdmin {
-		t.Fatalf("admin reset: %v", err)
+	if _, err := e.eng.SetPassword(ctx, usid(4), generate); err == nil {
+		t.Fatal("admin reset allowed")
+	}
+	// An adopted account whose approval was revoked (or that was adopted
+	// before approvals existed): refused until an administrator confirms.
+	if ok, err := e.eng.RevokeAdoption(ctx, model.KindUser, guid(3)); err != nil || !ok {
+		t.Fatalf("revoke: %v %v", ok, err)
+	}
+	if _, err := e.eng.SetPassword(ctx, usid(3), generate); reasonOf(err) != syncapi.ReasonAdopted {
+		t.Fatalf("unconfirmed adopted reset: %v", err)
+	}
+	if _, err := e.eng.ApproveAdoption(ctx, engine.ApproveRequest{Kind: model.KindUser, SourceID: guid(3), TargetID: e.userByEmail("user0003@example.com").ID}); err != nil {
+		t.Fatalf("confirm an adopted link: %v", err)
 	}
 	if _, err := e.eng.SetPassword(ctx, usid(3), generate); err != nil {
 		t.Fatalf("adopted reset allowed by policy: %v", err)

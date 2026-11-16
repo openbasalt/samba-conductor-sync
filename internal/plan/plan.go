@@ -9,9 +9,9 @@
 //   - nothing is ever deleted: a user that leaves the scope (or is removed
 //     from AD) is suspended; a group that leaves the scope is kept as is;
 //   - only objects the sync owns are touched: a link recorded in state, the
-//     ownership marker on the target object, or an explicit adoption policy;
-//     an existing target object with the same address is otherwise reported
-//     and left alone;
+//     ownership marker on the target object, or an adoption an administrator
+//     approved for that exact object (adoption.go); an existing target
+//     object with the same address is otherwise reported and left alone;
 //   - a suspension done outside the sync is never undone by it;
 //   - members the sync does not manage stay in managed groups unless the
 //     operator opts in to removing them;
@@ -229,6 +229,10 @@ type Plan struct {
 	NotIncluded int                `json:"not_included,omitempty"`
 	Excluded    int                `json:"excluded,omitempty"`
 	Skipped     []SkippedObject    `json:"skipped,omitempty"`
+	// Candidates are existing target objects that match an AD object by
+	// address under adopt = "email": pending an approval, approved (and
+	// adopted by an operation of this plan) or refused.
+	Candidates []Candidate `json:"adoption_candidates,omitempty"`
 }
 
 // Counts returns how many operations of each kind the plan holds.
@@ -412,6 +416,17 @@ type Input struct {
 	// Activated lists the source users who activated their account
 	// (self-service activation): their accounts are created like any other.
 	Activated map[string]bool
+	// Approvals are the administrators' approvals of adoptions, by
+	// AdoptionKey. Without one, nothing is adopted.
+	Approvals map[string]Approval
+	// AdoptChecks are the source checks of approved candidates, by
+	// AdoptionKey; an approved candidate without one is not adopted.
+	AdoptChecks map[string]AdoptionCheck
+	// GroupRolesKnown is set when the target's administrator role
+	// assignments were read; AdminRoleGroups are the target group IDs that
+	// hold one. A group is never adopted unless GroupRolesKnown.
+	GroupRolesKnown bool
+	AdminRoleGroups map[string]bool
 }
 
 type planner struct {
@@ -444,6 +459,7 @@ type planner struct {
 	srcUser  map[string]*model.SourceUser
 	srcGroup map[string]*model.SourceGroup
 	inflight map[string]InFlight // kind|key
+	cands    []Candidate
 }
 
 // Compute builds the plan. It is deterministic: the same input yields the
@@ -490,8 +506,9 @@ func Compute(in Input) *Plan {
 		return p.warn[i].Key < p.warn[j].Key
 	})
 	sort.SliceStable(p.errs, func(i, j int) bool { return p.errs[i].Key < p.errs[j].Key })
+	sortCandidates(p.cands)
 	out := &Plan{Connector: in.Connector, Ops: p.ops, Warnings: p.warn, Errors: p.errs,
-		SourceUsers: len(in.Users), SourceGroups: len(in.Groups)}
+		SourceUsers: len(in.Users), SourceGroups: len(in.Groups), Candidates: p.cands}
 	for _, l := range in.Links {
 		switch l.Kind {
 		case model.KindUser:
@@ -768,7 +785,7 @@ func (p *planner) user(su *model.SourceUser, email string) {
 				p.warnf(WarnOwnedByOther, email, "target account carries the marker of another source object (%s); skipped", t.Owner)
 				return
 			case p.in.Policy.Adopt != AdoptEmail:
-				p.warnf(WarnUnmanagedExists, email, "an account with this address exists and is not managed by the sync; left alone (adopt = \"email\" to take it over)")
+				p.warnf(WarnUnmanagedExists, email, "an account with this address exists and is not managed by the sync; left alone (adopt = \"email\" lists it for an administrator's approval)")
 				return
 			case !su.Enabled:
 				// Adopting would suspend a working account only because AD
@@ -776,8 +793,15 @@ func (p *planner) user(su *model.SourceUser, email string) {
 				p.warnf(WarnAdoptDisabled, email, "an account with this address exists but the AD user is disabled; not adopted (and not suspended) until it is enabled in AD")
 				return
 			}
+			ap := p.candidate(Candidate{Kind: model.KindUser, SourceID: su.ID, SourceDN: su.DN, Account: su.Account, TargetID: t.ID, Address: email},
+				t.Protected, false)
+			if ap == nil {
+				// Not adopted: the user is left alone like an unmanaged
+				// address (no create, no suspension, no membership).
+				return
+			}
 			desired, kept := p.desiredFor(su, t, true)
-			reason := "adopt existing account by address"
+			reason := approvedReason("account", ap)
 			if len(kept) > 0 {
 				reason += "; kept on the account: " + strings.Join(kept, ", ")
 			}
@@ -904,6 +928,7 @@ func (p *planner) groups() {
 		}
 		var tg *model.TargetGroup
 		adopted, adopting := false, false
+		var groupApproval *Approval
 		if l, ok := p.groupLinkBySrc[sg.ID]; ok {
 			if t, ok := p.tGroupByID[l.TargetID]; ok {
 				tg = t
@@ -929,10 +954,15 @@ func (p *planner) groups() {
 					p.add(Op{Kind: GroupRelink, SourceID: sg.ID, TargetID: t.ID, Key: email,
 						Reason: "created by an interrupted run"})
 				case p.in.Policy.Adopt == AdoptEmail:
+					ap := p.candidate(Candidate{Kind: model.KindGroup, SourceID: sg.ID, SourceDN: sg.DN, Account: sg.Account, TargetID: t.ID, Address: email},
+						false, p.in.AdminRoleGroups[t.ID])
+					if ap == nil {
+						continue
+					}
 					tg = t
-					adopted, adopting = true, true
+					adopted, adopting, groupApproval = true, true, ap
 				default:
-					p.warnf(WarnUnmanagedExists, email, "a group with this address exists and is not managed by the sync; left alone (adopt = \"email\" to take it over)")
+					p.warnf(WarnUnmanagedExists, email, "a group with this address exists and is not managed by the sync; left alone (adopt = \"email\" lists it for an administrator's approval)")
 					continue
 				}
 			}
@@ -960,7 +990,7 @@ func (p *planner) groups() {
 			switch {
 			case adopting:
 				p.add(Op{Kind: GroupAdopt, SourceID: sg.ID, TargetID: tg.ID, Key: email, Changes: changes, Group: &spec,
-					Reason: "adopt existing group by address"})
+					Reason: approvedReason("group", groupApproval)})
 			case len(changes) > 0:
 				p.add(Op{Kind: GroupUpdate, SourceID: sg.ID, TargetID: tg.ID, Key: email, Changes: changes, Group: &spec})
 			}

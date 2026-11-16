@@ -45,3 +45,34 @@ func TestLoad(t *testing.T) {
 		t.Fatal("empty secret accepted")
 	}
 }
+
+func TestLoadRefusesLinksAndForeignOwners(t *testing.T) {
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	dir := t.TempDir()
+	p := filepath.Join(dir, "key.json")
+	if err := os.WriteFile(p, []byte("{}"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err != nil {
+		t.Fatalf("0400 owned by the process user refused: %v", err)
+	}
+	// A symbolic link to a private file is refused: the file is named
+	// itself, so nobody can redirect the credential by replacing a link.
+	link := filepath.Join(dir, "link.json")
+	if err := os.Symlink(p, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(link); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("symlink accepted: %v", err)
+	}
+	// Owned by another user (simulated by changing the process's uid).
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: every file is owned by an accepted user")
+	}
+	old := euid
+	euid = func() int { return os.Geteuid() + 1 }
+	defer func() { euid = old }()
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "owned by uid") {
+		t.Fatalf("foreign owner accepted: %v", err)
+	}
+}

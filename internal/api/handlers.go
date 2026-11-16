@@ -211,7 +211,8 @@ func (s *Server) status(ctx context.Context) (*syncapi.Status, error) {
 	if out.Key, err = s.rt.KeyInfo(ctx, cfg); err != nil {
 		return nil, err
 	}
-	out.Ready = out.Key != nil && cfg.Google.AdminSubject != ""
+	// The delegated mode also needs the subject to impersonate.
+	out.Ready = out.Key != nil && (!cfg.Google.Delegated() || cfg.Google.AdminSubject != "")
 	return out, nil
 }
 
@@ -547,23 +548,41 @@ func (s *Server) connectionTest(ctx context.Context, p *syncapi.ConnectionTestPa
 	if err != nil {
 		out.AD.Error = err.Error()
 	}
-	// Google: a token with the read-only scopes and a read of the admin
-	// subject prove the key, the domain-wide delegation and the subject.
+	// Google: a token with the read-only scopes and a read prove the key
+	// and its authorization: the service account's own role, or the
+	// domain-wide delegation and the subject (read back).
 	conn, err := s.rt.Connector(ctx, cfg, false)
 	if err == nil {
-		var u *model.TargetUser
-		if u, err = conn.GetUser(ctx, cfg.Google.AdminSubject); err == nil {
-			role := "not an administrator"
-			if u.Protected {
-				role = "administrator"
-			}
-			out.Google = syncapi.Check{OK: true, Detail: fmt.Sprintf("token issued; %s found (%s)", cfg.Google.AdminSubject, role)}
-		}
+		out.Google, err = googleCheck(ctx, conn, cfg)
 	}
 	if err != nil {
 		out.Google = syncapi.Check{OK: false, Error: err.Error()}
 	}
 	return out, nil
+}
+
+func googleCheck(ctx context.Context, conn connector.Connector, cfg *config.Config) (syncapi.Check, error) {
+	if !cfg.Google.Delegated() {
+		p, ok := conn.(interface {
+			Ping(ctx context.Context) (string, error)
+		})
+		if !ok {
+			return syncapi.Check{}, errors.New("the connector can not be tested")
+		}
+		if _, err := p.Ping(ctx); err != nil {
+			return syncapi.Check{}, err
+		}
+		return syncapi.Check{OK: true, Detail: "token issued; the service account reads the directory with its own role (no domain-wide delegation)"}, nil
+	}
+	u, err := conn.GetUser(ctx, cfg.Google.AdminSubject)
+	if err != nil {
+		return syncapi.Check{}, err
+	}
+	role := "not an administrator"
+	if u.Protected {
+		role = "administrator"
+	}
+	return syncapi.Check{OK: true, Detail: fmt.Sprintf("token issued; %s found (%s); WARNING: domain-wide delegation", cfg.Google.AdminSubject, role)}, nil
 }
 
 func (s *Server) mappingPreview(ctx context.Context, p *syncapi.MappingPreviewParams) (*syncapi.PreviewResult, error) {

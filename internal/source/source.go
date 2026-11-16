@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"github.com/openbasalt/samba-conductor-sync/internal/model"
+	"github.com/openbasalt/samba-conductor-sync/internal/plan"
 )
 
 // Skipped is a source object that could not be mapped (no address, a
@@ -74,4 +75,20 @@ func Lookup(ctx context.Context, src Source, sid string) (*UserScope, error) {
 		}
 	}
 	return &UserScope{Reason: "not in the sync scope"}, nil
+}
+
+// AdoptionQuery is one AD object to check before it may adopt an existing
+// target object: its objectGUID and the address it renders.
+type AdoptionQuery struct {
+	Kind    model.Kind
+	ID      string
+	Address string
+}
+
+// AdoptionChecker is implemented by sources that can check adoption
+// candidates: whether the object is privileged in the domain and which
+// other directory objects carry the same address. Results are keyed by
+// plan.AdoptionKey. A source without it adopts nothing (fail closed).
+type AdoptionChecker interface {
+	CheckAdoption(ctx context.Context, qs []AdoptionQuery) (map[string]plan.AdoptionCheck, error)
 }

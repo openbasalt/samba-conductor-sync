@@ -203,7 +203,7 @@ func newWorld(t *testing.T, src source.Source) *world {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	key := google.NewTestKey(fake.ClientEmail, fake.PrivateKey(), srv.URL+"/token")
-	gcfg := google.Config{AdminSubject: fake.AdminSubject, KeyCredential: "x", APIBaseURL: srv.URL, RequestsPerSecond: 1e6}
+	gcfg := google.Config{AdminSubject: fake.AdminSubject, KeyCredential: "x", APIBaseURL: srv.URL, RequestsPerSecond: 1e6, ManageGroups: true}
 	w := &world{t: t, fake: fake, st: st, alerts: &alert.Recorder{}}
 	w.eng = &engine.Engine{Store: st, Source: src, ConnectorName: "google",
 		Connect: func(write bool) (connector.Connector, error) {
