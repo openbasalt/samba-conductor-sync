@@ -42,6 +42,13 @@ type GroupGetter interface {
 	GetGroup(ctx context.Context, key string) (*model.TargetGroup, error)
 }
 
+// RoleReader is implemented by connectors that can tell which principals
+// hold an administrator role on the target. A group that holds one is never
+// adopted; when the read fails, no group is adopted.
+type RoleReader interface {
+	AdminRoleGroups(ctx context.Context) (map[string]bool, error)
+}
+
 // Capabilities are the optional self-service features of a connector:
 // what conductor may offer a user for this target. Nothing in them is
 // specific to one target.

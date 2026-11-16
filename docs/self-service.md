@@ -53,7 +53,7 @@ an empty value keeps the file's):
 | Key | Default | Values and effect |
 |---|---|---|
 | `activation` | `auto` | `auto`: the sync runs create accounts as before and activation is not offered. `self-service`: the sync runs create an account only for users who activated theirs; the others are shown in every plan as `pending-activation` warnings. Adoptions, updates and suspensions are not affected |
-| `password_reset` | `created` | `created`: only accounts the sync created. `created-and-adopted`: also accounts that existed before the sync and were adopted. `off`: no password changes |
+| `password_reset` | `created` | `created`: only accounts the sync created. `created-and-adopted`: also accounts that existed before the sync and were adopted, each only when an administrator approved its adoption (`conductor-sync adopt approve`). `off`: no password changes |
 | `chosen_password` | `off` | `allow`: the user may type a password instead of a generated one |
 | `password_min_length` | 12 | raises the connector's minimum (8 to 100) |
 | `max_per_user_hour` | 3 | activations and password changes per user in any hour |
@@ -77,12 +77,15 @@ an empty value keeps the file's):
   is journaled as a run of its own (action `activate`, trigger
   `self-service`) and holds the run lock. An existing account with the
   address is never taken over by an activation: with `adopt = "email"` the
-  next sync run adopts it.
+  next sync run adopts it, once an administrator approved that adoption.
 - A password is set only on the user's linked account that carries the
   sync's ownership marker for that user. Target administrators and the
   sync's own admin subject are always refused, whatever the policy; so are
   suspended accounts, users out of the scope or disabled, and adopted
-  accounts unless `password_reset = "created-and-adopted"`.
+  accounts unless `password_reset = "created-and-adopted"` and an
+  administrator approved that adoption individually (an account adopted
+  before approvals existed is refused until its adoption is confirmed with
+  `conductor-sync adopt approve`).
 - The rate limits are kept in the state database, so they hold across
   restarts. Refusals do not count; every request that reaches the target
   does, successful or not.

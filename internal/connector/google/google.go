@@ -1,8 +1,15 @@
 // Package google is the Google Workspace connector: the Admin SDK
 // Directory API (users, groups, members) called directly over HTTPS with a
-// service account and domain-wide delegation. No Google client library is
-// used; the handful of endpoints are small and this keeps the dependency
-// tree (and its supply chain) minimal.
+// service account. No Google client library is used; the handful of
+// endpoints are small and this keeps the dependency tree (and its supply
+// chain) minimal.
+//
+// Credentials (auth.go): by default the service account acts as itself and
+// holds a custom administrator role limited to what the sync needs
+// (AuthServiceAccount); its key can do nothing beyond that role. Domain-wide
+// delegation (AuthDelegation), where the key may impersonate any user of the
+// tenant, super administrators included, is only used when configured
+// explicitly and is warned about at every start.
 //
 // Ownership: every account the sync creates or adopts carries an
 // externalIds entry {type: "custom", customType: <marker>, value: <AD
@@ -45,7 +52,16 @@ import (
 type Config struct {
 	// Customer is the customer ID ("my_customer" = the admin's own).
 	Customer string `toml:"customer"`
-	// AdminSubject is the administrator the service account acts as.
+	// AuthMode is how the service account is authorized: "service-account"
+	// (the default: the service account holds an administrator role of its
+	// own, no impersonation) or "domain-wide-delegation" (legacy: the key
+	// may impersonate any user of the tenant; explicit opt-in only). A host
+	// setting: the management API can not change it.
+	AuthMode string `toml:"auth_mode,omitempty"`
+	// AdminSubject is the administrator the service account acts as with
+	// domain-wide delegation (required there, a dedicated account). With
+	// the service-account mode it is optional and only marks an account the
+	// sync never touches.
 	AdminSubject string `toml:"admin_subject"`
 	// KeyCredential names the service account JSON key: a systemd
 	// credential name or an absolute path to a 0600 file. Optional when
@@ -67,7 +83,26 @@ type Config struct {
 	Timeout           Duration `toml:"timeout"`
 	// MemberRole of added members (MEMBER).
 	MemberRole string `toml:"member_role"`
+
+	// ManageGroups is set by the configuration when groups are synced (not
+	// a key of the file): the write scopes include the group scope only
+	// then.
+	ManageGroups bool `toml:"-"`
 }
+
+// Authorization modes (google.auth_mode).
+const (
+	AuthServiceAccount = "service-account"
+	AuthDelegation     = "domain-wide-delegation"
+)
+
+// Delegated reports whether the configuration uses domain-wide delegation.
+func (c *Config) Delegated() bool { return c.AuthMode == AuthDelegation }
+
+// DelegationWarning is printed at every start in the delegated mode.
+const DelegationWarning = "WARNING: google.auth_mode = \"domain-wide-delegation\": the service account key can impersonate any user of the tenant, " +
+	"super administrators included (whoever holds it can take the whole tenant over). Move to auth_mode = \"service-account\" with a custom " +
+	"administrator role; see docs/google-credentials.md."
 
 // Duration decodes "30s" style TOML strings.
 type Duration struct{ time.Duration }
@@ -108,13 +143,25 @@ func (c *Config) Defaults() {
 	if c.MemberRole == "" {
 		c.MemberRole = "MEMBER"
 	}
+	if c.AuthMode == "" {
+		c.AuthMode = AuthServiceAccount
+	}
 }
 
 // Validate checks the section (after Defaults).
 func (c *Config) Validate() error {
 	var errs []error
-	if c.AdminSubject == "" || !strings.Contains(c.AdminSubject, "@") {
-		errs = append(errs, errors.New("google.admin_subject: the administrator address to act as is required"))
+	switch c.AuthMode {
+	case AuthServiceAccount:
+		if c.AdminSubject != "" && !strings.Contains(c.AdminSubject, "@") {
+			errs = append(errs, errors.New("google.admin_subject: an address"))
+		}
+	case AuthDelegation:
+		if c.AdminSubject == "" || !strings.Contains(c.AdminSubject, "@") {
+			errs = append(errs, errors.New("google.admin_subject: the administrator address to act as is required with domain-wide delegation"))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("google.auth_mode %q: want %s or %s", c.AuthMode, AuthServiceAccount, AuthDelegation))
 	}
 	for name, raw := range map[string]string{"api_base_url": c.APIBaseURL, "token_url": c.TokenURL} {
 		if raw == "" {
@@ -143,6 +190,9 @@ func (c *Config) Validate() error {
 type Connector struct {
 	cfg Config
 	c   *client
+	// roles reads the administrator role assignments with their own
+	// read-only token (requested only when a group adoption needs it).
+	roles *client
 
 	mu  sync.Mutex
 	raw map[string]*apiUser // last-read accounts, for merging list fields
@@ -214,10 +264,7 @@ func New(cfg Config, key *ServiceAccountKey, write bool, opt Options) (*Connecto
 	if sleep == nil {
 		sleep = sleepCtx
 	}
-	scopes := ReadScopes
-	if write {
-		scopes = WriteScopes
-	}
+	scopes := Scopes(write, cfg.ManageGroups)
 	backoff, maxBackoff := opt.Backoff, opt.MaxBackoff
 	if backoff <= 0 {
 		backoff = time.Second
@@ -229,10 +276,17 @@ func New(cfg Config, key *ServiceAccountKey, write bool, opt Options) (*Connecto
 	if cfg.RequestsPerSecond > 0 {
 		interval = time.Duration(float64(time.Second) / cfg.RequestsPerSecond)
 	}
-	c := &client{base: base, hc: hc, lim: &limiter{interval: interval}, maxRetries: cfg.MaxRetries,
-		backoff: backoff, maxBackoff: maxBackoff, now: now, sleep: sleep, reqLog: opt.RequestLog,
-		tokens: &tokenSource{key: key, subject: cfg.AdminSubject, scopes: scopes, tokenURL: tokenURL, hc: hc, now: now}}
-	return &Connector{cfg: cfg, c: c, raw: map[string]*apiUser{}}, nil
+	subject := ""
+	if cfg.Delegated() {
+		subject = cfg.AdminSubject
+	}
+	lim := &limiter{interval: interval}
+	newClient := func(scopes []string) *client {
+		return &client{base: base, hc: hc, lim: lim, maxRetries: cfg.MaxRetries,
+			backoff: backoff, maxBackoff: maxBackoff, now: now, sleep: sleep, reqLog: opt.RequestLog,
+			tokens: &tokenSource{key: key, subject: subject, scopes: scopes, tokenURL: tokenURL, hc: hc, now: now}}
+	}
+	return &Connector{cfg: cfg, c: newClient(scopes), roles: newClient([]string{ScopeRoleReadonly}), raw: map[string]*apiUser{}}, nil
 }
 
 // Name implements connector.Connector.
@@ -305,7 +359,7 @@ func (g *Connector) toModel(u *apiUser) model.TargetUser {
 	if t.Attrs[model.FieldOrgUnit] == "" {
 		t.Attrs[model.FieldOrgUnit] = "/"
 	}
-	t.Protected = u.IsAdmin || u.IsDelegatedAdmin || strings.EqualFold(u.PrimaryEmail, g.cfg.AdminSubject)
+	t.Protected = u.IsAdmin || u.IsDelegatedAdmin || (g.cfg.AdminSubject != "" && strings.EqualFold(u.PrimaryEmail, g.cfg.AdminSubject))
 	t.Admin = u.IsAdmin
 	for _, e := range u.ExternalIDs {
 		switch {

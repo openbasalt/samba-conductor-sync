@@ -23,19 +23,36 @@ import (
 )
 
 // Directory API scopes. Planning reads with the read-only scopes; only
-// apply (and the manual delete) asks for the write scopes. Both sets must
-// be authorized for the service account's client ID in the Admin console
-// (domain-wide delegation).
-var (
-	ReadScopes = []string{
-		"https://www.googleapis.com/auth/admin.directory.user.readonly",
-		"https://www.googleapis.com/auth/admin.directory.group.readonly",
-	}
-	WriteScopes = []string{
-		"https://www.googleapis.com/auth/admin.directory.user",
-		"https://www.googleapis.com/auth/admin.directory.group",
-	}
+// apply (and the manual delete and the self-service writes) asks for the
+// write scopes, and the group write scope only when groups are synced. The
+// role assignments are read with their own read-only scope, only when a
+// group adoption is approved. A scope bounds what a token may do; what the
+// service account may do is its administrator role (service-account mode)
+// or, with domain-wide delegation, the scopes authorized for its client ID
+// together with the impersonated user's rights.
+const (
+	ScopeUserReadonly  = "https://www.googleapis.com/auth/admin.directory.user.readonly"
+	ScopeGroupReadonly = "https://www.googleapis.com/auth/admin.directory.group.readonly"
+	ScopeUser          = "https://www.googleapis.com/auth/admin.directory.user"
+	ScopeGroup         = "https://www.googleapis.com/auth/admin.directory.group"
+	ScopeRoleReadonly  = "https://www.googleapis.com/auth/admin.directory.rolemanagement.readonly"
 )
+
+// ReadScopes are the scopes of a read-only connector (plan, import plan,
+// Google-first plan, connection test, self-service status).
+var ReadScopes = []string{ScopeUserReadonly, ScopeGroupReadonly}
+
+// Scopes returns the scopes a connector requests.
+func Scopes(write, groups bool) []string {
+	switch {
+	case !write:
+		return append([]string(nil), ReadScopes...)
+	case groups:
+		return []string{ScopeUser, ScopeGroup}
+	default:
+		return []string{ScopeUser}
+	}
+}
 
 // DefaultTokenURL is Google's OAuth 2.0 token endpoint.
 const DefaultTokenURL = "https://oauth2.googleapis.com/token"
@@ -95,7 +112,9 @@ func NewTestKey(clientEmail string, rk *rsa.PrivateKey, tokenURI string) *Servic
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 // assertion builds the RS256-signed JWT for the JWT bearer grant (RFC
-// 7523) with domain-wide delegation: sub is the admin being impersonated.
+// 7523). With domain-wide delegation, sub is the admin being impersonated;
+// in the service-account mode subject is empty, the claim is left out and
+// the token acts as the service account itself (its own admin role).
 func (k *ServiceAccountKey) assertion(subject, aud string, scopes []string, now time.Time) (string, error) {
 	header := map[string]string{"alg": "RS256", "typ": "JWT"}
 	if k.PrivateKeyID != "" {
@@ -103,11 +122,13 @@ func (k *ServiceAccountKey) assertion(subject, aud string, scopes []string, now 
 	}
 	claims := map[string]any{
 		"iss":   k.ClientEmail,
-		"sub":   subject,
 		"scope": strings.Join(scopes, " "),
 		"aud":   aud,
 		"iat":   now.Unix(),
 		"exp":   now.Add(time.Hour).Unix(),
+	}
+	if subject != "" {
+		claims["sub"] = subject
 	}
 	hb, _ := json.Marshal(header)
 	cb, _ := json.Marshal(claims)

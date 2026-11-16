@@ -289,3 +289,33 @@ func TestAdoptedPolicy(t *testing.T) {
 		t.Fatalf("bad overlay value accepted: %v", err)
 	}
 }
+
+// TestGoogleAuthModeIsAHostSetting: the default is the service-account
+// mode; domain-wide delegation is explicit in the file and a stored
+// settings version (the management API) can not switch to it. The group
+// write scope follows whether groups are synced.
+func TestGoogleAuthModeIsAHostSetting(t *testing.T) {
+	c, err := Load(write(t, minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Google.AuthMode != "service-account" || c.Google.Delegated() || c.Google.ManageGroups {
+		t.Fatalf("defaults %+v", c.Google)
+	}
+	d, err := Load(write(t, strings.Replace(minimal, "[google]\n", "[google]\nauth_mode = \"domain-wide-delegation\"\n", 1)))
+	if err != nil || !d.Google.Delegated() {
+		t.Fatalf("delegation: %v", err)
+	}
+	if _, err := Load(write(t, strings.Replace(minimal, "admin_subject = \"admin@example.com\"\n", "auth_mode = \"domain-wide-delegation\"\n", 1))); err == nil ||
+		!strings.Contains(err.Error(), "admin_subject") {
+		t.Fatalf("delegation without a subject: %v", err)
+	}
+	n, err := c.Overlay(SettingsOf(c), 2)
+	if err != nil || n.Google.Delegated() {
+		t.Fatalf("overlay changed the mode: %v", err)
+	}
+	ex, err := Load(filepath.Join("..", "..", "conductor-sync.toml.example"))
+	if err != nil || !ex.Google.ManageGroups || ex.Google.Delegated() {
+		t.Fatalf("example: %+v %v", ex.Google, err)
+	}
+}

@@ -118,3 +118,56 @@ func TestHealthcheck(t *testing.T) {
 		t.Fatalf("socket present: exit %d, stderr %q", code, errb.String())
 	}
 }
+
+// TestCLIAdoptAndDelegationWarning: the adopt command lists and refuses
+// approvals without a plan; the delegated mode is warned about at start.
+func TestCLIAdoptAndDelegationWarning(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "c.toml")
+	body := `state_dir = "` + dir + `/state"
+credentials_dir = "` + dir + `"
+[source]
+realm = "LAB.TEST"
+ca_file = "/ca.pem"
+bind_user = "svc"
+user_bases = ["OU=People,DC=lab,DC=test"]
+[mapping]
+primary_email = ["{sAMAccountName}@example.com"]
+allowed_domains = ["example.com"]
+[policy]
+adopt = "email"
+[google]
+`
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if rc := run([]string{"adopt", "list", "--config", cfg}, nil, &out, &errb); rc != exitOK || !strings.Contains(out.String(), "No recorded plan") ||
+		strings.Contains(errb.String(), "WARNING") {
+		t.Fatalf("list: %d %q %q", rc, out.String(), errb.String())
+	}
+	if rc := run([]string{"adopt", "approve", "--config", cfg}, nil, &out, &errb); rc != exitUsage {
+		t.Fatalf("approve without names: %d", rc)
+	}
+	errb.Reset()
+	if rc := run([]string{"adopt", "approve", "--source", "00000000-0000-4000-8000-000000000001", "--target", "1", "--config", cfg}, nil, &out, &errb); rc != exitNotApplied ||
+		!strings.Contains(errb.String(), "no recorded plan") {
+		t.Fatalf("approve without a plan: %d %q", rc, errb.String())
+	}
+	// Domain-wide delegation: explicit, with the subject, and warned about.
+	if err := os.WriteFile(cfg, []byte(body+"auth_mode = \"domain-wide-delegation\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	errb.Reset()
+	if rc := run([]string{"adopt", "list", "--config", cfg}, nil, &out, &errb); rc != exitError || !strings.Contains(errb.String(), "admin_subject") {
+		t.Fatalf("delegation without a subject: %d %q", rc, errb.String())
+	}
+	if err := os.WriteFile(cfg, []byte(body+"auth_mode = \"domain-wide-delegation\"\nadmin_subject = \"sync-admin@example.com\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	errb.Reset()
+	if rc := run([]string{"adopt", "list", "--config", cfg}, nil, &out, &errb); rc != exitOK || !strings.Contains(errb.String(), "WARNING") ||
+		!strings.Contains(errb.String(), "domain-wide-delegation") {
+		t.Fatalf("delegation warning: %d %q", rc, errb.String())
+	}
+}

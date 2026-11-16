@@ -34,9 +34,39 @@ type env struct {
 	out    *bytes.Buffer
 	st     *store.Store
 	dir    string
+	// checks overrides the AD adoption checks by plan.AdoptionKey (the
+	// default is a clean check); checked records the queries.
+	checks  map[string]plan.AdoptionCheck
+	checked []source.AdoptionQuery
 }
 
 type mutableSource struct{ e *env }
+
+// CheckAdoption implements source.AdoptionChecker.
+func (m mutableSource) CheckAdoption(_ context.Context, qs []source.AdoptionQuery) (map[string]plan.AdoptionCheck, error) {
+	out := map[string]plan.AdoptionCheck{}
+	for _, q := range qs {
+		m.e.checked = append(m.e.checked, q)
+		k := plan.AdoptionKey(q.Kind, q.ID)
+		out[k] = m.e.checks[k]
+	}
+	return out, nil
+}
+
+// approveAll plans and approves every pending adoption candidate, as an
+// administrator reviewing each one would.
+func (e *env) approveAll() {
+	e.t.Helper()
+	c := e.plan()
+	for _, cand := range c.Plan.Candidates {
+		if cand.Status != plan.CandidatePending {
+			continue
+		}
+		if _, err := e.eng.ApproveAdoption(context.Background(), engine.ApproveRequest{Kind: cand.Kind, SourceID: cand.SourceID, TargetID: cand.TargetID}); err != nil {
+			e.t.Fatalf("approve %s: %v", cand.Address, err)
+		}
+	}
+}
 
 func (m mutableSource) Read(context.Context) (*source.Result, error) {
 	// A copy, so the engine never sees later test edits mid-run.
@@ -70,7 +100,7 @@ func newEnv(t *testing.T) *env {
 	t.Cleanup(func() { _ = st.Close() })
 	e := &env{t: t, fake: fake, srv: srv, src: &source.Result{}, alerts: &alert.Recorder{}, out: &bytes.Buffer{}, st: st, dir: dir}
 	key := google.NewTestKey(fake.ClientEmail, fake.PrivateKey(), srv.URL+"/token")
-	gcfg := google.Config{AdminSubject: fake.AdminSubject, KeyCredential: "test", APIBaseURL: srv.URL, RequestsPerSecond: 100000, MaxRetries: 6}
+	gcfg := google.Config{AdminSubject: fake.AdminSubject, KeyCredential: "test", APIBaseURL: srv.URL, RequestsPerSecond: 100000, MaxRetries: 6, ManageGroups: true}
 	e.eng = &engine.Engine{
 		Store:  st,
 		Source: mutableSource{e},
@@ -552,6 +582,11 @@ func TestUnmanagedAndAdoption(t *testing.T) {
 	}
 	e.eng.Policy.Adopt = plan.AdoptEmail
 	c = e.plan()
+	if c.Plan.Counts()[plan.UserAdopt] != 0 || !hasWarning(c.Plan, plan.WarnAdoptionPending, "user0007@example.com") {
+		t.Fatalf("adoption without approval %v %v", c.Plan.Ops, c.Plan.Warnings)
+	}
+	e.approveAll()
+	c = e.plan()
 	if c.Plan.Counts()[plan.UserAdopt] != 1 {
 		t.Fatalf("adopt plan %v", c.Plan.Ops)
 	}
@@ -635,9 +670,10 @@ func TestDeleteIsManualAndGuarded(t *testing.T) {
 func TestReadOnlyScopesForPlan(t *testing.T) {
 	e := newEnv(t)
 	e.seed()
-	// Only the read-only scopes are delegated: plan works, apply cannot
+	// Only the read-only scopes are granted: plan works, apply cannot
 	// even get a token.
 	e.fake.Delegated = map[string]bool{fakegoogle.ScopeUserReadonly: true, fakegoogle.ScopeGroupReadonly: true}
+	e.fake.RoleScopes = e.fake.Delegated
 	if c := e.plan(); c.Plan.Counts()[plan.UserCreate] != 30 {
 		t.Fatalf("plan %v", c.Plan.Counts())
 	}

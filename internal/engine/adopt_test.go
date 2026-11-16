@@ -67,7 +67,22 @@ func TestAdoptExistingWorkspace(t *testing.T) {
 	}
 	e.src.Groups = []model.SourceGroup{group(2, "Sales", uref(1), uref(2))}
 
+	// Nothing is adopted without an administrator's approval: the
+	// candidates are listed, the new user is created.
 	c := e.plan()
+	if counts := c.Plan.Counts(); counts[plan.UserAdopt] != 0 || counts[plan.GroupAdopt] != 0 || len(c.Plan.Candidates) != 3 {
+		t.Fatalf("unapproved plan %v %+v", counts, c.Plan.Candidates)
+	}
+	e.approveAll()
+	// The role assignments can not be read (the scope is not granted): the
+	// approved group is still refused, the users are adopted.
+	c = e.plan()
+	if counts := c.Plan.Counts(); counts[plan.UserAdopt] != 2 || counts[plan.GroupAdopt] != 0 ||
+		!hasWarning(c.Plan, plan.WarnAdoptionRefused, "sales@groups.example.com") {
+		t.Fatalf("roles unknown: %v %v", counts, c.Plan.Warnings)
+	}
+	e.fake.RoleScopes[fakegoogle.ScopeRoleReadonly] = true
+	c = e.plan()
 	counts := c.Plan.Counts()
 	if counts[plan.UserAdopt] != 2 || counts[plan.UserCreate] != 1 || counts[plan.GroupAdopt] != 1 || counts[plan.UserSuspend] != 0 || counts[plan.UserUnsuspend] != 0 {
 		t.Fatalf("plan %v\n%v", counts, c.Plan.Ops)

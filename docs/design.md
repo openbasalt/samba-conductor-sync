@@ -22,7 +22,7 @@ how AD attributes become Google fields is in [mapping.md](mapping.md).
 | mapping | templates, address rules, org unit placement ([mapping.md](mapping.md)) |
 | plan | the diff between source and target: typed operations, warnings, a digest, the limit checks |
 | engine | plan and apply runs: confirmation, journal, resume, manual deletion |
-| connector | the target; `google` calls the Directory API directly (JWT bearer grant with domain-wide delegation, backoff) |
+| connector | the target; `google` calls the Directory API directly (JWT bearer grant as the service account itself, which holds a custom administrator role; domain-wide delegation only as an explicit legacy mode, see [google-credentials.md](google-credentials.md); backoff) |
 | store | SQLite: links, runs, plans, journal, settings versions, encrypted secrets, audit chain, run lock |
 | management API | `conductor-sync serve` on a Unix socket for conductor (package `syncapi`) |
 

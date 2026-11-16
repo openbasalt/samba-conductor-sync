@@ -101,8 +101,11 @@ target = "/Contractors"
 [policy]
 suspend_disabled = true          # disabled in AD -> suspended in Google
 create_disabled = false          # do not create accounts for disabled users
-adopt = "never"                  # "email": take over existing accounts with the same address
+adopt = "never"                  # "email": list existing accounts and groups with the same address as
+                                 # candidates; each is adopted only after `conductor-sync adopt approve`
 remove_unmanaged_members = false # keep members of synced groups that the sync does not manage
+# Google administrators, privileged AD objects, addresses another AD object
+# carries and groups with an admin role are never adopted.
 # Adopting an existing Google Workspace (adopt = "email"): what the sync may
 # change on accounts and groups that existed before it. The defaults keep an
 # adopted account as it was; see docs/mapping.md, "Adopting an existing
@@ -141,11 +144,17 @@ max_source_drop_percent = 10   # vs. the last applied run
 
 [google]
 customer = "my_customer"
-# The super administrator the service account acts as (domain-wide delegation).
-admin_subject = "sync-admin@example.com"
+# How the service account is authorized (host setting, file only):
+# "service-account" (default): it holds a custom admin role of its own and
+# impersonates nobody. "domain-wide-delegation" (legacy): the key can
+# impersonate any user, super admins included; warned about at every start.
+# See docs/google-credentials.md (privileges, scopes, migration, rotation).
+auth_mode = "service-account"
+# Only with domain-wide delegation: the dedicated administrator to act as.
+# admin_subject = "sync-admin@example.com"
 # The service account JSON key: set it in conductor (stored encrypted in the
 # state database) or with `conductor-sync key set FILE`. A key kept as a
-# credential file instead:
+# credential file instead (owned by conductor-sync, 0600, not a symlink):
 # key_credential = "google-sa"
 # Ownership marker (externalIds customType); one per sync instance and tenant.
 # Changing it orphans the accounts marked with the previous value.

@@ -41,7 +41,7 @@ func setup(t *testing.T, write bool) (*fakegoogle.Server, *google.Connector, *sl
 		t.Fatal(err)
 	}
 	sl := &sleeps{}
-	c, err := google.New(google.Config{AdminSubject: fake.AdminSubject, KeyCredential: "x", APIBaseURL: srv.URL, RequestsPerSecond: 1e6},
+	c, err := google.New(google.Config{AdminSubject: fake.AdminSubject, KeyCredential: "x", APIBaseURL: srv.URL, RequestsPerSecond: 1e6, ManageGroups: true},
 		key, write, google.Options{HTTPClient: srv.Client(), Sleep: sl.sleep})
 	if err != nil {
 		t.Fatal(err)
@@ -185,13 +185,14 @@ func TestTokenScopes(t *testing.T) {
 	if !errors.Is(err, connector.ErrAuth) {
 		t.Fatalf("write with read scopes: %v", err)
 	}
-	// A subject the client is not delegated for gets no token.
+	// With domain-wide delegation, a subject the client is not delegated
+	// for gets no token.
 	fake2 := fakegoogle.New("example.com")
 	srv := httptest.NewTLSServer(fake2)
 	defer srv.Close()
 	fake2.SetTokenURL(srv.URL + "/token")
 	key, _ := google.ParseServiceAccountKey(fake2.KeyJSON())
-	c3, _ := google.New(google.Config{AdminSubject: "intruder@example.com", KeyCredential: "x", APIBaseURL: srv.URL}, key, false,
+	c3, _ := google.New(google.Config{AuthMode: google.AuthDelegation, AdminSubject: "intruder@example.com", KeyCredential: "x", APIBaseURL: srv.URL}, key, false,
 		google.Options{HTTPClient: srv.Client()})
 	if _, err := c3.Snapshot(context.Background(), false); !errors.Is(err, connector.ErrAuth) || !strings.Contains(err.Error(), "unauthorized_client") {
 		t.Fatalf("wrong subject: %v", err)

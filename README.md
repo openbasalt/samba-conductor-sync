@@ -34,10 +34,10 @@ Container image: `docker.io/openbasalt/samba-conductor-sync`, tags `0.1.1` and `
 | First apply is manual | scheduled runs stay blocked until an operator applied once by hand |
 | Safety limits | scheduled runs apply only plans inside `[limits]` (creates, suspends, renames, updates, memberships, % of accounts touched, source shrinkage, empty source); otherwise the run stops, records the plan as blocked, alerts and exits 3 |
 | Never delete | an account that leaves the scope (or the AD) is suspended; a group that leaves the scope is kept. Deletion is `delete-user`: one account, suspended by the sync for at least `min_suspended_days`, out of the AD scope, confirmed by typing its address |
-| Only what it owns | accounts carry an ownership marker (`externalIds`, customType `conductor-sync`); an existing account with the same address is reported and left alone unless `adopt = "email"`; administrators are never suspended or renamed; a suspension made by someone else is never undone; members the sync does not manage stay in synced groups |
+| Only what it owns | accounts carry an ownership marker (`externalIds`, customType `conductor-sync`); an existing account with the same address is reported and left alone; with `adopt = "email"` it is adopted only after an administrator approves that account (`adopt approve`), never when it is a Google administrator, a privileged AD object or an address another AD object carries; administrators are never suspended or renamed; a suspension made by someone else is never undone; members the sync does not manage stay in synced groups |
 | Idempotent, resumable | every operation is journaled before and after it is sent; a crashed run is detected by the next one, and the fresh plan resolves the unknown outcomes (marker, in-flight creates). Re-running is always safe |
 | Audit | every run, operation, blocked plan and deletion goes to a hash-chained audit log (`audit verify`); the chain detects accidental or partial edits but is not keyed or anchored outside the database, so it does not protect against someone with write access to the database file: protect that file and ship the exported log off the host if you need tamper evidence |
-| Secrets | the AD password is a systemd credential (or 0600 file); the Google key is stored encrypted (AES-256-GCM, key from the `state-key` credential) or kept as a credential file; never logged, never returned by the API. Initial Google passwords are random, never stored, and must be changed at first sign-in (or SSO, below) |
+| Secrets | the AD password is a systemd credential (or 0600 file); the Google key is stored encrypted (AES-256-GCM, key from the `state-key` credential) or kept as a credential file (owner-only, no symbolic link); never logged, never returned by the API. The service account holds a custom administrator role of its own; domain-wide delegation, which lets the key impersonate any user, is an explicit legacy mode warned about at every start ([`docs/google-credentials.md`](docs/google-credentials.md)). Initial Google passwords are random, never stored, and must be changed at first sign-in (or SSO, below) |
 | Management API | `conductor-sync serve` on a Unix socket for conductor only (SO_PEERCRED), typed operations, every change audited with the acting AD user; applies bound to a reviewed plan's digest |
 
 Passwords are not synchronized: Samba keeps only hashes that Google
@@ -53,6 +53,7 @@ conductor-sync status
 conductor-sync history [--limit N] [--run RUN]
 conductor-sync map [--kind user|group] [KEY]
 conductor-sync delete-user KEY [--confirm ADDRESS]
+conductor-sync adopt list | approve --kind user|group --source GUID --target ID | revoke --kind user|group --source GUID
 conductor-sync audit verify|export
 conductor-sync check-config
 conductor-sync serve
@@ -67,6 +68,8 @@ Operator guide: [`docs/usage-p5.md`](docs/usage-p5.md) (§13: the
 management API and conductor's sync section). Mapping reference:
 [`docs/mapping.md`](docs/mapping.md). Starting AD from an existing Google
 Workspace: [`docs/import-from-google.md`](docs/import-from-google.md).
+Google credentials, least privilege and key rotation:
+[`docs/google-credentials.md`](docs/google-credentials.md).
 Keeping AD in step with Google Workspace (Google-first mode):
 [`docs/google-first.md`](docs/google-first.md). Users
 activating their account or setting a new password from conductor's
@@ -89,7 +92,7 @@ self-service: [`docs/self-service.md`](docs/self-service.md). Decisions:
 | `internal/model` | connector-agnostic users, groups, members |
 | `internal/source/adsource` | AD reader (scope, mapping, members) |
 | `internal/mapping` | templates, address validation, OU mapping |
-| `internal/connector` | connector interface; `google`: Directory API client (JWT bearer with domain-wide delegation, backoff, merges) |
+| `internal/connector` | connector interface; `google`: Directory API client (JWT bearer as the service account with its own admin role, or the legacy domain-wide delegation; backoff, merges) |
 | `internal/store` | SQLite state: links, runs, plans, journal, audit chain, run lock, settings versions, encrypted secrets |
 | `internal/fakegoogle` | fake Directory API used by every test (no real Workspace is ever written) |
 | `internal/alert`, `internal/metrics` | webhook and log alerts; Prometheus textfile |

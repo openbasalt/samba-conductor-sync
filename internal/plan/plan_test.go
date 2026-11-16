@@ -282,6 +282,7 @@ func TestPendingActivation(t *testing.T) {
 		Policy:      Policy{SuspendDisabled: true, Adopt: AdoptEmail, SelfServiceActivation: true},
 		Activated:   map[string]bool{"b": true},
 	}
+	approve(&in, model.KindUser, "d", "4", "d@x.com")
 	in.Users[0].Attrs[model.FieldGivenName] = "New"
 	p := Compute(in)
 	if got, want := kinds(p), "user.update:a@x.com user.adopt:d@x.com user.create:b@x.com"; got != want {

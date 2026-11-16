@@ -4,7 +4,8 @@ A company that already lives in Google Workspace and starts its Samba AD
 from scratch has its people in Google, not in AD. The import creates them
 in AD once, from the Google directory, so that the normal AD to Google sync
 can then adopt each existing Google account by address (`policy.adopt =
-"email"`, see [mapping.md](mapping.md#adopting-an-existing-google-workspace)).
+"email"` and an administrator's approval of each adoption, see
+[mapping.md](mapping.md#adopting-an-existing-google-workspace)).
 After the import, AD is the source of truth as usual.
 
 The import is a one-time bootstrap, not a second sync direction: nothing is
@@ -145,10 +146,15 @@ Nothing is ever deleted.
    `source.user_bases` and `source.group_bases`. conductor's import page
    warns when one of these does not hold, and when `source.include_groups`
    is set (imported users are synced only once they are members).
-2. Keep `mode = "dry-run"` and generate a plan. It should show only
-   `user.adopt` and `group.adopt`, with no field change for the imported
-   accounts (AD holds the Google values), and no `user.create`.
-3. Apply it by hand. Adoptions count toward `max_updates` and
+2. Keep `mode = "dry-run"` and generate a plan. It lists every imported
+   account and group as an adoption candidate (`adoption-pending`). Review
+   them (`conductor-sync adopt list`) and approve each one (`conductor-sync
+   adopt approve`). Group adoptions need the role assignments to be
+   readable ([google-credentials.md](google-credentials.md)).
+3. Plan again. It should show only `user.adopt` and `group.adopt`, with no
+   field change for the imported accounts (AD holds the Google values), and
+   no `user.create`.
+4. Apply it by hand. Adoptions count toward `max_updates` and
    `max_touched_percent`; the first batch usually needs the override (see
    the rollout in [mapping.md](mapping.md#adopting-an-existing-google-workspace)).
 

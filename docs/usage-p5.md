@@ -7,20 +7,16 @@ secret appears in this document; replace `example.com` with your domains.
 
 1. In the Google Cloud console, create a project and a service account
    (no roles needed on the project). Create a JSON key for it and keep
-   the file for step 3. Note the service account's client ID (numeric).
-2. In the Admin console: Security > Access and data control > API controls
-   > Domain-wide delegation > Add new: the client ID and these scopes:
-   ```
-   https://www.googleapis.com/auth/admin.directory.user
-   https://www.googleapis.com/auth/admin.directory.group
-   https://www.googleapis.com/auth/admin.directory.user.readonly
-   https://www.googleapis.com/auth/admin.directory.group.readonly
-   ```
-   `plan` uses only the read-only scopes; `apply` and `delete-user` use the
-   two write scopes. Nothing else is requested.
-3. Choose the administrator the service account acts as
-   (`google.admin_subject`). A dedicated super admin account for the sync
-   is recommended; the sync never suspends or renames administrators.
+   the file for step 3. Do not enable domain-wide delegation.
+2. In the Admin console, create a custom administrator role with only the
+   privileges the sync needs and assign it to the service account
+   (`google.auth_mode = "service-account"`, the default). The privileges,
+   the scopes the sync requests, how to keep and rotate the key, and the
+   migration from the legacy domain-wide delegation mode are in
+   [google-credentials.md](google-credentials.md).
+3. `plan` uses only the read-only scopes; `apply` and `delete-user` use the
+   user write scope, and the group write scope only when groups are
+   synced. The sync never suspends or renames administrators.
 4. Create the org units you map AD OUs to (the sync does not create org
    units).
 
@@ -145,12 +141,14 @@ must change it at first sign-in: use SSO (P4 SAML) or an admin reset to
 give users access.
 
 Existing Google accounts with the same address are not touched (warning
-`unmanaged-exists`). To take them over, set `policy.adopt = "email"`: either
-for one reviewed run, or for as long as AD users are being added to an
-existing Workspace. Adopted accounts keep their org unit, address, password
+`unmanaged-exists`). Adoption by address is never automatic: with
+`policy.adopt = "email"` the plan lists each match as a candidate
+(`adoption-pending`), and an administrator approves each one with
+`conductor-sync adopt approve`; only approved candidates that pass the
+checks are adopted. Adopted accounts keep their org unit, address, password
 and any name AD has no value for; see "Adopting an existing Google
 Workspace" in [mapping.md](mapping.md#adopting-an-existing-google-workspace)
-for every rule and its switch.
+for the approvals, every rule and its switch.
 
 ## 6. Schedule
 
@@ -214,9 +212,10 @@ when done. Google keeps deleted users restorable for about 20 days.
   memberships that depend on a failed create are skipped, not failed.
 - State database lost: the next plan relinks every account through the
   marker (an adopted account also carries its adoption mark, so it keeps
-  the adopted rules). Groups have no marker: run once with `adopt =
-  "email"` after reviewing the plan; they are then treated as adopted
-  (add-only members, see mapping.md).
+  the adopted rules). Groups have no marker, and the approvals were in the
+  lost database: with `adopt = "email"`, approve each group again
+  (`conductor-sync adopt list`, `adopt approve`); they are then treated as
+  adopted (add-only members, see mapping.md).
 
 ## 10. Exit codes
 
