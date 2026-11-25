@@ -86,6 +86,13 @@ the key is in the service-account mode from this version on), keep
 `admin_subject` a dedicated account that is used for nothing else, and
 delegate only the scopes in the table above.
 
+`conductor-sync check-config` prints the mode in force and whether it was
+set in the file or is the default, and warns when `admin_subject` is set
+in the service-account mode, where it is not used to act as an
+administrator and only marks an account the sync never touches: after an
+upgrade, that warning is the sign of a configuration that relied on
+domain-wide delegation without saying so.
+
 ## The key
 
 - Prefer the encrypted store (`conductor-sync key set FILE`): the key is

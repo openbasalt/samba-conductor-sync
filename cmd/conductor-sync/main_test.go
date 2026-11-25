@@ -171,3 +171,51 @@ adopt = "email"
 		t.Fatalf("delegation warning: %d %q", rc, errb.String())
 	}
 }
+
+// TestCLICheckConfigAuthMode: check-config names the authorization mode in
+// force and where it comes from, and warns when admin_subject is set but
+// not used to act as an administrator (a 0.2.x configuration that relied
+// on domain-wide delegation, upgraded without auth_mode). The run goes on
+// to the credentials, which this test does not provide.
+func TestCLICheckConfigAuthMode(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "c.toml")
+	body := `state_dir = "` + dir + `/state"
+credentials_dir = "` + dir + `"
+[source]
+realm = "LAB.TEST"
+ca_file = "/ca.pem"
+bind_user = "svc"
+user_bases = ["OU=People,DC=lab,DC=test"]
+[mapping]
+primary_email = ["{sAMAccountName}@example.com"]
+allowed_domains = ["example.com"]
+[google]
+`
+	check := func(extra string) (string, string) {
+		t.Helper()
+		if err := os.WriteFile(cfg, []byte(body+extra), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out, errb bytes.Buffer
+		run([]string{"check-config", "--config", cfg}, nil, &out, &errb)
+		return out.String(), errb.String()
+	}
+	out, errb := check("")
+	if !strings.Contains(out, "auth_mode = service-account (the default: no auth_mode in the file)") || strings.Contains(errb, "admin_subject") {
+		t.Fatalf("default mode: %q %q", out, errb)
+	}
+	out, errb = check("admin_subject = \"sync-admin@example.com\"\n")
+	if !strings.Contains(out, "auth_mode = service-account (the default") || !strings.Contains(errb, "WARNING: google.admin_subject = \"sync-admin@example.com\" is not used") {
+		t.Fatalf("unused subject: %q %q", out, errb)
+	}
+	out, errb = check("auth_mode = \"service-account\"\nadmin_subject = \"sync-admin@example.com\"\n")
+	if !strings.Contains(out, "auth_mode = service-account (set in the file)") || !strings.Contains(errb, "is not used") {
+		t.Fatalf("explicit mode, unused subject: %q %q", out, errb)
+	}
+	out, errb = check("auth_mode = \"domain-wide-delegation\"\nadmin_subject = \"sync-admin@example.com\"\n")
+	if !strings.Contains(out, "auth_mode = domain-wide-delegation (set in the file), acting as sync-admin@example.com") ||
+		strings.Contains(errb, "is not used") || !strings.Contains(errb, "WARNING: google.auth_mode") {
+		t.Fatalf("delegation: %q %q", out, errb)
+	}
+}

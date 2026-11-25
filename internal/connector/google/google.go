@@ -88,6 +88,9 @@ type Config struct {
 	// a key of the file): the write scopes include the group scope only
 	// then.
 	ManageGroups bool `toml:"-"`
+	// AuthModeDefaulted is set by Defaults when the file named no
+	// auth_mode (the mode in force is then the default, service-account).
+	AuthModeDefaulted bool `toml:"-"`
 }
 
 // Authorization modes (google.auth_mode).
@@ -144,8 +147,33 @@ func (c *Config) Defaults() {
 		c.MemberRole = "MEMBER"
 	}
 	if c.AuthMode == "" {
-		c.AuthMode = AuthServiceAccount
+		c.AuthMode, c.AuthModeDefaulted = AuthServiceAccount, true
 	}
+}
+
+// AuthModeReport describes the authorization mode in force for
+// check-config: one line, and warnings for settings that do not do what
+// they may have been meant to (call it after Defaults). The delegated mode
+// has its own DelegationWarning, printed whenever the configuration is
+// opened, and cannot lack its admin subject (Validate refuses that).
+func (c *Config) AuthModeReport() (line string, warnings []string) {
+	origin := "set in the file"
+	if c.AuthModeDefaulted {
+		origin = "the default: no auth_mode in the file"
+	}
+	switch c.AuthMode {
+	case AuthDelegation:
+		line = fmt.Sprintf("Google authorization: auth_mode = %s (%s), acting as %s", c.AuthMode, origin, c.AdminSubject)
+	default:
+		line = fmt.Sprintf("Google authorization: auth_mode = %s (%s), the service account acts with its own administrator role", c.AuthMode, origin)
+		if c.AdminSubject != "" {
+			warnings = append(warnings, fmt.Sprintf("WARNING: google.admin_subject = %q is not used to act as an administrator with auth_mode = %q; "+
+				"it only marks an account the sync never touches. A configuration that relied on domain-wide delegation needs the service "+
+				"account to hold a custom administrator role (docs/google-credentials.md), or auth_mode = %q set explicitly.",
+				c.AdminSubject, c.AuthMode, AuthDelegation))
+		}
+	}
+	return line, warnings
 }
 
 // Validate checks the section (after Defaults).

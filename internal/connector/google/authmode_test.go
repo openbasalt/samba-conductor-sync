@@ -126,3 +126,32 @@ func TestAdminRoleGroups(t *testing.T) {
 		t.Fatalf("roles %v %v", got, err)
 	}
 }
+
+// TestAuthModeReport: the mode in force, where it comes from, and the
+// unused admin subject of the service-account mode.
+func TestAuthModeReport(t *testing.T) {
+	cases := []struct {
+		cfg      google.Config
+		line     string
+		warnings int
+	}{
+		{google.Config{}, "service-account (the default: no auth_mode in the file)", 0},
+		{google.Config{AdminSubject: "a@example.com"}, "service-account (the default", 1},
+		{google.Config{AuthMode: google.AuthServiceAccount, AdminSubject: "a@example.com"}, "service-account (set in the file)", 1},
+		{google.Config{AuthMode: google.AuthServiceAccount}, "service-account (set in the file)", 0},
+		{google.Config{AuthMode: google.AuthDelegation, AdminSubject: "a@example.com"}, "domain-wide-delegation (set in the file), acting as a@example.com", 0},
+	}
+	for _, c := range cases {
+		cfg := c.cfg
+		cfg.Defaults()
+		line, warnings := cfg.AuthModeReport()
+		if !strings.Contains(line, c.line) || len(warnings) != c.warnings {
+			t.Errorf("%+v: %q %q", c.cfg, line, warnings)
+		}
+		for _, w := range warnings {
+			if !strings.Contains(w, cfg.AdminSubject) || !strings.Contains(w, google.AuthDelegation) {
+				t.Errorf("warning %q", w)
+			}
+		}
+	}
+}
