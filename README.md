@@ -116,9 +116,18 @@ scripts under the prefix `conductor-synclab`, network `10.95.0.0/24`, domain
 
 ## Status
 
-0.2.1 released (signed GitHub release `v0.2.1`, APT packages `0.2.1-1`),
-a security update of 0.2.0 built with Go 1.27.3; the container image
-above carries an earlier version. Engine, Google connector, CLI,
+0.3.0 released on 2026-11-24 (signed tag `v0.3.0`, packages `0.3.0-1` in
+the APT `stable` suite and in basalt-tools), built with Go 1.27.4; the
+container image above carries an earlier version. 0.3.0 authorizes the
+Google service account with a custom administrator role by default
+(`google.auth_mode = "service-account"`) instead of domain-wide delegation,
+and adoption by address waits for an administrator's approval
+(`conductor-sync adopt approve`). An installation that relied on
+domain-wide delegation must create the role or set
+`auth_mode = "domain-wide-delegation"` before upgrading: see
+[docs/google-credentials.md](docs/google-credentials.md) and
+[upgrading.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/upgrading.md).
+Engine, Google connector, CLI,
 systemd units, scope and org unit placement by AD group, the management API
 used by conductor's "Google Workspace sync" section
 (<https://github.com/openbasalt/samba-conductor/blob/main/docs/usage-p5b.md>),
