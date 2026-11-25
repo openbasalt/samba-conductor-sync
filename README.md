@@ -124,7 +124,9 @@ Google service account with a custom administrator role by default
 and adoption by address waits for an administrator's approval
 (`conductor-sync adopt approve`). An installation that relied on
 domain-wide delegation must create the role or set
-`auth_mode = "domain-wide-delegation"` before upgrading: see
+`auth_mode = "domain-wide-delegation"` before upgrading (`conductor-sync
+check-config` prints the mode in force and warns about an `admin_subject`
+that the service-account mode does not use): see
 [docs/google-credentials.md](docs/google-credentials.md) and
 [upgrading.md](https://github.com/openbasalt/samba-conductor-docs/blob/main/upgrading.md).
 Engine, Google connector, CLI,

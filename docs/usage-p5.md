@@ -297,7 +297,7 @@ Google API endpoints) stay in the file. From the command line:
 | `cs secret set ad-bind-password` / `alert-webhook-secret` | store the value read from stdin, encrypted |
 | `cs secret remove NAME` | drop a stored secret (the credential file, if any, is used again); `google-key` for the key |
 | `cs serve` | the management API (normally started by the socket unit) |
-| `cs check-config` | also says whether the sync settings come from the file or from a stored version |
+| `cs check-config` | also says whether the sync settings come from the file or from a stored version, and the Google authorization mode in force (warns when `admin_subject` is set but unused in the service-account mode) |
 
 Hosts without systemd timers (containers) set `schedule.in_process = true`:
 `serve` then runs the scheduled applies itself every `schedule.interval`.

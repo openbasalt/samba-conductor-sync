@@ -279,6 +279,11 @@ func actor(scheduled bool) string {
 
 func checkConfig(ctx context.Context, rt *app.Runtime, cfg *config.Config, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "configuration: ok (mode %s, connector %s, state %s)\n", cfg.Mode, cfg.Connector, cfg.StateDir)
+	line, warnings := cfg.Google.AuthModeReport()
+	fmt.Fprintln(stdout, line)
+	for _, w := range warnings {
+		fmt.Fprintln(stderr, w)
+	}
 	if cfg.SettingsVersion > 0 {
 		fmt.Fprintf(stdout, "sync settings: stored version %d (management API); the file's sync settings are not in force\n", cfg.SettingsVersion)
 	} else {
